@@ -17,5 +17,7 @@ Project for figuring out OPNsense HA in my home environment.
 * CARP won't work with Broadband connection expections
   * CARP on internal networks for default routes
   * dev.d for changing WAN / WAN2 interface states on CARP failover events?
-
-
+* The Sync from primary creates advskew adjusted capr interfaces on the secondary 
+* rtsold needs to be stopped when wan int brought down - restart with "onestart"
+* INIT state for CARP has to be handled in addition to BACKUP and MASTER
+* balance-alb on proxmox bond interface really screws up CARP - use actice/passive or deal with LACP on one switch
