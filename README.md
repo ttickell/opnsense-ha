@@ -22,3 +22,8 @@ Project for figuring out OPNsense HA in my home environment.
 * INIT state for CARP has to be handled in addition to BACKUP and MASTER
 * balance-alb on proxmox bond interface really screws up CARP - use actice/passive or deal with LACP on one switch
 * DUH ... secondary firewall looses internet access in real setup as the WAN interfaces are down - add default route in failover script pointing to non-CARP address of primary firewall
+
+## New Stuff
+* i don't care abotu starting /stopping dhcp6c - rtsold will start / hup it on changes
+* Probably means I shoudln't bother changing state on either daemon - if the ints are down, they can't work anyway
+* radvd - check this - clients are moving back and forth on failover for IPv6, unless I down the not "backup" firewall and reset client network interface
