@@ -9,11 +9,16 @@ TAG="syshook-carp-00-custom"
 INTERFACE=$1
 CARP_STATUS=$2
 WAN_INTS="vtnet5 vtnet4"
+SERVICES="rtsold dhcp6c radvd"
+
+if [ "${CARP_STATUS}" != "MASTER" ]; then
+	CARP_STATUS="BACKUP"
+fi
 
 logger -p error -t ${TAG} "Called with $INTERFACE / \"$CARP_STATUS\""
 
 for WAN_INT in ${WAN_INTS}; do 
-	logger -p error -t ${TAG} "WORKGIN on $WAN_INT"
+	logger -p error -t ${TAG} "Working on $WAN_INT"
 	cur_status=`ifconfig -l -u | grep ${WAN_INT}`
 	cur_status=$?
 
@@ -37,4 +42,33 @@ for WAN_INT in ${WAN_INTS}; do
 		logger -p error -t ${TAG} "${WAN_INT} is $cur_status and CARP is ${CARP_STATUS} - no action"
 	fi
 		
+done
+
+## ensure sevices that need to be up or down are up or down
+for service in ${SERVICES}; do
+ 	status=$(service ${service} status)
+	status=$?
+	if [ "$status" -eq 0 -a "${CARP_STATUS}" != "MASTER" ]; then
+		# Service is running but we are not master
+		logger -p error -t ${TAG} "Stopping ${service}"
+		service ${service} onestop
+	elif [ "$status" -gt 0 -a "${CARP_STATUS}" = "MASTER" ]; then
+		# Service is not running, but we are master
+		logger -p error -t ${TAG} "Starting ${service}"
+		## This really shouldn't be needed, but OPNsense is starting 
+		##  services someway I can't find - they don't start the same
+		##  with "service xxxxxxx start" as they do however OPNsense 
+		##  is doing this.   Redo this block when I know
+		case ${service} in
+			rtsold)
+				/usr/sbin/rtsold -aiu -p /var/run/rtsold.pid -A /var/etc/rtsold_script.sh -R /usr/local/opnsense/scripts/interfaces/rtsold_resolvconf.sh
+			;;
+			radvd)
+				/usr/local/sbin/radvd -p /var/run/radvd.pid -C /var/etc/radvd.conf -m syslog
+			;;
+			dhcp6c)
+				/usr/local/sbin/dhcp6c -c /var/etc/dhcp6c.conf -p /var/run/dhcp6c.pid
+			;;
+		esac
+	fi
 done
