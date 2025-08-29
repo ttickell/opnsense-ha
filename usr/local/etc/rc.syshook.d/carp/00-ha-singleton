@@ -1,14 +1,9 @@
 #!/bin/sh
 
-env >> /tmp/carp.log
-echo "#-----------------------" >> /tmp/carp.log
-echo "called as: $0" >> /tmp/carp.log
-echo "Called with: $@" >> /tmp/carp.log
-
 TAG="syshook-carp-00-custom"
 INTERFACE=$1
 CARP_STATUS=$2
-WAN_INTS="vtnet5 vtnet4"
+WAN_INTS="__INT_LIST__"
 SERVICES="rtsold dhcp6c radvd"
 ## Assuming the "real" addresses of the primary firewall
 ALT_DEFROUTE_IPV4="192.168.105.2"
