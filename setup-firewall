@@ -1,0 +1,46 @@
+#!/bin/sh
+
+# space delimitd list of WAN ints (as they appear to ifconfig)
+WAN_INTS="vtnet1"
+
+HA_REPO="https://github.com/ttickell/opnsense-ha.git"
+WORKDIR="/root/workspace/setup-firewall"
+
+## Internal stuff
+HA_DIR="${WORKDIR}/opnsense-ha"
+IP_DIR="${WORKDIR}/opnsense-ipv6"
+
+## Exit if we error on commands
+exec_error_exit () {
+	local test
+	local res
+	res=$($@ 2>&1)
+	test=$?
+	if [ "$test" -gt 0 ]; then
+		echo "Cloud not run \"$@\" - Exit"
+		echo "$res"
+		exit
+	fi
+}
+
+## Clean Old Crap
+if [ -d "${WORKDIR}" ]; then
+	exec_error_exit "rm -rf ${WORKDIR}"
+fi
+
+## Make sure we have git available
+test=$(which git)
+test=$?
+if [ "$test" -eq 1 ]; then
+	error_exit "pkg install -y git"
+fi
+
+## Get the repos we need
+exec_error_exit "mkdir -p ${HA_DIR}"
+exec_error_exit "mkdir -p ${IP_DIR}"
+exec_error_exit "git clone ${HA_REPO} ${HA_DIR}"
+
+## Install the failover helper
+test=$(cat ${HA_DIR}/usr/local/etc/rc.syshook.d/carp/00-ha-singleton | sed -e "s/__INT_LIST__/${WAN_INTS}/" > /usr/local/etc/rc.syshook.d/carp/00-ha-singleton)
+exec_error_exit "chmod 755 /usr/local/etc/rc.syshook.d/carp/00-ha-singleton"
+
