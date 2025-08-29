@@ -1,0 +1,40 @@
+#!/bin/sh
+
+env >> /tmp/carp.log
+echo "#-----------------------" >> /tmp/carp.log
+echo "called as: $0" >> /tmp/carp.log
+echo "Called with: $@" >> /tmp/carp.log
+
+TAG="syshook-carp-00-custom"
+INTERFACE=$1
+CARP_STATUS=$2
+WAN_INTS="vtnet5 vtnet4"
+
+logger -p error -t ${TAG} "Called with $INTERFACE / \"$CARP_STATUS\""
+
+for WAN_INT in ${WAN_INTS}; do 
+	logger -p error -t ${TAG} "WORKGIN on $WAN_INT"
+	cur_status=`ifconfig -l -u | grep ${WAN_INT}`
+	cur_status=$?
+
+	## WAN_INT is in "up list":
+	if [ "${cur_status}" -eq 0 ]; then
+		cur_status="UP"
+	else
+		cur_status="DOWN"
+	fi
+	logger -p error -t ${TAG} "FOUND $WAN_INT status as ${cur_status}"
+
+	echo "CUR_STATUS : \"${cur_status}\""
+	echo "CARP_STATUS: \"${CARP_STATUS}\""
+	if [ "${cur_status}" = "UP" -a "${CARP_STATUS}" = "BACKUP" ]; then
+		logger -p error -t ${TAG} "${WAN_INT} is UP and CARP is BACKUP - bring ${WAN_INT} down"
+		ifconfig ${WAN_INT} down
+	elif [ "${cur_status}" = "DOWN" -a "${CARP_STATUS}" == "MASTER" ]; then
+		logger -p error -t ${TAG} "${WAN_INT} is down and CARP is MASTER - bring ${WAN_INT} up"
+		ifconfig ${WAN_INT} up
+	else
+		logger -p error -t ${TAG} "${WAN_INT} is $cur_status and CARP is ${CARP_STATUS} - no action"
+	fi
+		
+done
