@@ -21,3 +21,4 @@ Project for figuring out OPNsense HA in my home environment.
 * rtsold needs to be stopped when wan int brought down - restart with "onestart"
 * INIT state for CARP has to be handled in addition to BACKUP and MASTER
 * balance-alb on proxmox bond interface really screws up CARP - use actice/passive or deal with LACP on one switch
+* DUH ... secondary firewall looses internet access in real setup as the WAN interfaces are down - add default route in failover script pointing to non-CARP address of primary firewall

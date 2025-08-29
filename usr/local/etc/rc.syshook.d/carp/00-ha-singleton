@@ -10,6 +10,9 @@ INTERFACE=$1
 CARP_STATUS=$2
 WAN_INTS="vtnet5 vtnet4"
 SERVICES="rtsold dhcp6c radvd"
+## Assuming the "real" addresses of the primary firewall
+ALT_DEFROUTE_IPV4="192.168.105.2"
+ALT_DEFROUTE_IPV6="fd03:17ac:e938:10::2"
 
 if [ "${CARP_STATUS}" != "MASTER" ]; then
 	CARP_STATUS="BACKUP"
@@ -72,3 +75,23 @@ for service in ${SERVICES}; do
 		esac
 	fi
 done
+
+## Other Cleanups
+ipv4_route_status=$(netstat -rn | grep default | grep "${ALT_DEFROUTE_IPV4}")
+ipv4_route_status=$?
+ipv6_route_status=$(netstat -rn | grep default | grep "${ALT_DEFROUTE_IPV6}")
+ipv6_route_status=$?
+
+
+if [ "${CARP_STATUS}" = "MASTER" ]; then
+	# If we are becoming MASTER AND if we have an alt default route -
+	#   then we don't want the default route any more
+	[ "$ipv4_route_status" -eq 0 ] && route del default "${ALT_DEFROUTE_IPV4}"
+	[ "$ipv6_route_status" -eq 0 ] && route -6 del default "${ALT_DEFROUTE_IPV6}"
+else
+	# If we are becomign BACKUP AND if we do NOT have alt default route -
+	#   then add one so we can still talk to the rest of the world
+	[ "$ipv4_route_status" -gt 0 ] && route add default "${ALT_DEFROUTE_IPV4}"
+	[ "$ipv6_route_status" -gt 0 ] && route -6 add default "${ALT_DEFROUTE_IPV6}"
+fi
+
