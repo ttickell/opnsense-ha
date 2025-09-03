@@ -1,0 +1,16 @@
+#!/bin/sh
+
+## 
+## This file is only for the backup firewall.  Since it is a VM
+##  with different interface types, we'll remap the interface
+##  names to be consistent with the primary firewall.
+##
+## This really only matters (it seems) for the WAN interfaces
+##  since their real interface names are used in configurations
+##  we want to be consistent acrossd devices (i.e. dhcp6c, etc)
+##
+
+
+ifconfig vmnet0 name lagg0
+ifconfig vmnet4 igc0
+ifconfig vmnet5 igc1

@@ -1,6 +1,16 @@
 # opnsense-ha
 Project for figuring out OPNsense HA in my home environment.
 
+## Failure Condition Tests
+
+| Failure | Test Condition | Expected Result | Status | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| AT&T Outage | AT&T Modem Power Off | Failover to Comcast < 30 Seconds | :heavy_check_mark ||
+| AT&T Recovery | Power On AT&T	 Modem | Failback to AT&T and Primary | : heavy_check_mark ||
+| Any Switch Failure  | Reboot switches in succession | Minimal interuption to sustained Network traffic | :x: | 246 Switch failure resulted in network failure (should not have?) |
+| Primary Hardware Failure | Hard Power Off (Cable Pull) | Failover to virtual secondary firewall within 60 seconds | To Be Tested | |
+
+
 ## Thing to Achieve
 
 * Firewalls must function in a primary /secondary configuration, with the secondary taking over if 
@@ -27,3 +37,8 @@ Project for figuring out OPNsense HA in my home environment.
 * i don't care abotu starting /stopping dhcp6c - rtsold will start / hup it on changes
 * Probably means I shoudln't bother changing state on either daemon - if the ints are down, they can't work anyway
 * radvd - check this - clients are moving back and forth on failover for IPv6, unless I down the not "backup" firewall and reset client network interface
+* radvd config (mostly) controlled from Services -> Router Advertisements [I knew this last year?]
+* configure CARP for ipv6 THEN configure RA so CARP address may be selected  - I think?  Seems to say it can be but interface only allows "automatic"
+* use configctl - configctl configd actions list to see what can be done
+* https://chatgpt.com/share/68b60055-bae0-8013-ac10-bbe78f7311b5
+* cp /var/db/dhcp6c_duid  /conf
