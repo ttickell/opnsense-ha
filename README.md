@@ -5,8 +5,8 @@ Project for figuring out OPNsense HA in my home environment.
 
 | Failure | Test Condition | Expected Result | Status | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| AT&T Outage | AT&T Modem Power Off | Failover to Comcast < 30 Seconds | :heavy_check_mark ||
-| AT&T Recovery | Power On AT&T	 Modem | Failback to AT&T and Primary | : heavy_check_mark ||
+| AT&T Outage | AT&T Modem Power Off | Failover to Comcast < 30 Seconds | :heavy_check_mark: ||
+| AT&T Recovery | Power On AT&T	 Modem | Failback to AT&T and Primary | : heavy_check_mark: ||
 | Any Switch Failure  | Reboot switches in succession | Minimal interuption to sustained Network traffic | :x: | 246 Switch failure resulted in network failure (should not have?) |
 | Primary Hardware Failure | Hard Power Off (Cable Pull) | Failover to virtual secondary firewall within 60 seconds | To Be Tested | |
 
