@@ -38,16 +38,31 @@ test_interface_connectivity() {
 
 # Main connectivity test
 connectivity_ok=false
+interfaces_tested=0
 
 for interface in ${WAN_INTERFACES}; do
+    interfaces_tested=$((interfaces_tested + 1))
     if test_interface_connectivity "${interface}"; then
         connectivity_ok=true
         break
     fi
 done
 
+# For single WAN setups, be less strict about connectivity requirements
+if [ ${interfaces_tested} -eq 1 ] && [ "${connectivity_ok}" = "false" ]; then
+    # In single WAN mode, check if interface is at least up (carrier present)
+    # This prevents CARP demotion due to temporary connectivity issues
+    for interface in ${WAN_INTERFACES}; do
+        if ifconfig "${interface}" | grep -q "status: active"; then
+            logger -p info -t ${TAG} "Single WAN mode: Interface ${interface} has carrier, allowing CARP master despite connectivity test failure"
+            connectivity_ok=true
+            break
+        fi
+    done
+fi
+
 if [ "${connectivity_ok}" = "true" ]; then
-    # At least one WAN interface has connectivity
+    # At least one WAN interface has connectivity (or carrier in single WAN mode)
     exit 0
 else
     # No WAN interfaces have connectivity - demote CARP

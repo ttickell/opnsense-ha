@@ -167,9 +167,31 @@ install_files_from_directory() {
     # Install configuration example
     if [ -f "${source_dir}/usr/local/etc/ha-singleton.conf.example" ]; then
         if [ ! -f "/usr/local/etc/ha-singleton.conf" ]; then
-            sed "s/vtnet1 vtnet2/${WAN_INTERFACES}/g" \
-                "${source_dir}/usr/local/etc/ha-singleton.conf.example" > \
-                /usr/local/etc/ha-singleton.conf
+            # Count WAN interfaces to determine which config template to use
+            local wan_count=0
+            for interface in ${WAN_INTERFACES}; do
+                wan_count=$((wan_count + 1))
+            done
+            
+            if [ ${wan_count} -eq 1 ]; then
+                # Use single WAN configuration if available
+                if [ -f "${source_dir}/usr/local/etc/ha-singleton-single-wan.conf.example" ]; then
+                    log_info "Using single WAN configuration template"
+                    sed "s/vtnet1/${WAN_INTERFACES}/g" \
+                        "${source_dir}/usr/local/etc/ha-singleton-single-wan.conf.example" > \
+                        /usr/local/etc/ha-singleton.conf
+                else
+                    # Fallback to regular config
+                    sed "s/vtnet1 vtnet2/${WAN_INTERFACES}/g" \
+                        "${source_dir}/usr/local/etc/ha-singleton.conf.example" > \
+                        /usr/local/etc/ha-singleton.conf
+                fi
+            else
+                # Use multi-WAN configuration
+                sed "s/vtnet1 vtnet2/${WAN_INTERFACES}/g" \
+                    "${source_dir}/usr/local/etc/ha-singleton.conf.example" > \
+                    /usr/local/etc/ha-singleton.conf
+            fi
             log_success "Installed configuration file"
         else
             log_warning "Configuration file already exists, not overwriting"

@@ -1,0 +1,35 @@
+#!/bin/sh
+# OPNsense HA Singleton Configuration File - Single WAN Example
+# This file should be copied to /usr/local/etc/ha-singleton.conf and customized
+
+# WAN Interfaces to manage (space-delimited) - Single WAN setup
+WAN_INTS="vtnet1"
+
+# Services to manage based on CARP status
+SERVICES="rtsold dhcp6c radvd"
+
+# Alternate default routes (backup node's physical addresses)
+# In single WAN setup, this should point to the backup firewall's LAN IP
+# or a management network route that allows the backup to reach the internet
+ALT_DEFROUTE_IPV4="192.168.1.1"     # Backup firewall's LAN IP
+ALT_DEFROUTE_IPV6="fd00::1"          # Backup firewall's IPv6 LAN IP
+
+# Feature toggles
+ENABLE_IPV6="yes"                    # Enable IPv6 management
+ENABLE_SERVICE_MANAGEMENT="yes"      # Enable service start/stop
+ENABLE_ROUTE_MANAGEMENT="yes"        # Enable backup route management
+DEBUG="no"                          # Enable debug logging
+
+# IPv6 Integration settings
+IPV6_SCRIPT_PATH="/usr/local/bin"    # Path to IPv6 management scripts
+SYNC_IPV6_STATE="yes"               # Sync IPv6 state between nodes
+
+# Advanced settings
+INTERFACE_SETTLE_TIME="2"           # Seconds to wait after interface changes
+SERVICE_STARTUP_DELAY="1"           # Seconds between service starts
+HEALTH_CHECK_ENABLED="yes"          # Enable health checking
+
+# Single WAN specific settings
+SINGLE_WAN_MODE="yes"               # Enable single WAN optimizations
+BACKUP_CONNECTIVITY_CHECK="yes"     # Check backup node connectivity
+BACKUP_NODE_IP="192.168.1.1"       # IP of backup firewall for connectivity test
