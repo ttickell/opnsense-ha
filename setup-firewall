@@ -13,8 +13,9 @@ GITHUB_REPO="https://github.com/ttickell/opnsense-ha.git"
 WORKDIR="/tmp/opnsense-ha-setup"
 BACKUP_DIR="/tmp/ha-setup-backup-$(date +%Y%m%d-%H%M%S)"
 
-# Default WAN interfaces (can be overridden)
+# Parse command line arguments
 WAN_INTERFACES="${1:-vtnet1}"
+BRANCH_NAME="${2:-main}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -91,6 +92,20 @@ create_backup() {
     done
 }
 
+# Function to validate branch name
+validate_branch() {
+    local branch="$1"
+    
+    # Basic validation - check for valid git branch name characters
+    if echo "${branch}" | grep -qE '^[a-zA-Z0-9._/-]+$'; then
+        return 0
+    else
+        log_error "Invalid branch name: ${branch}"
+        log_error "Branch names can only contain letters, numbers, dots, underscores, hyphens, and forward slashes"
+        return 1
+    fi
+}
+
 # Function to install git if needed
 ensure_git() {
     if ! command -v git >/dev/null 2>&1; then
@@ -115,9 +130,12 @@ install_from_github() {
     mkdir -p "${WORKDIR}"
     
     # Clone repository
-    log_info "Cloning repository..."
-    if ! git clone "${GITHUB_REPO}" "${WORKDIR}"; then
-        error_exit "Failed to clone repository"
+    log_info "Cloning repository (branch: ${BRANCH_NAME})..."
+    if ! git clone -b "${BRANCH_NAME}" "${GITHUB_REPO}" "${WORKDIR}"; then
+        log_warning "Failed to clone branch '${BRANCH_NAME}', trying default branch..."
+        if ! git clone "${GITHUB_REPO}" "${WORKDIR}"; then
+            error_exit "Failed to clone repository"
+        fi
     fi
     
     # Install files from repository
@@ -219,6 +237,7 @@ show_post_install_info() {
     log_info "Configuration file: /usr/local/etc/ha-singleton.conf"
     log_info "Main script: /usr/local/etc/rc.syshook.d/carp/00-ha-singleton"
     log_info "Backup location: ${BACKUP_DIR}"
+    log_info "Installed from branch: ${BRANCH_NAME}"
     echo
     log_warning "Remember to configure both primary and secondary firewalls!"
 }
@@ -233,12 +252,18 @@ main() {
     # Validate environment
     check_opnsense
     
+    # Validate branch name
+    if ! validate_branch "${BRANCH_NAME}"; then
+        error_exit "Invalid branch name provided: ${BRANCH_NAME}"
+    fi
+    
     # Check if running as root
     if [ "$(id -u)" -ne 0 ]; then
         error_exit "This script must be run as root"
     fi
     
     log_info "WAN Interfaces: ${WAN_INTERFACES}"
+    log_info "Git Branch: ${BRANCH_NAME}"
     echo
     
     # Create backup
@@ -261,12 +286,18 @@ main() {
 
 # Usage information
 usage() {
-    echo "Usage: $0 [WAN_INTERFACES]"
+    echo "Usage: $0 [WAN_INTERFACES] [BRANCH_NAME]"
+    echo
+    echo "Parameters:"
+    echo "  WAN_INTERFACES    Space-delimited list of WAN interface names (default: vtnet1)"
+    echo "  BRANCH_NAME       Git branch to use for installation (default: main)"
     echo
     echo "Examples:"
-    echo "  $0                    # Use default interface (vtnet1)"
-    echo "  $0 vtnet1             # Single WAN interface"
-    echo "  $0 \"vtnet1 vtnet2\"    # Multiple WAN interfaces"
+    echo "  $0                           # Use defaults (vtnet1, main branch)"
+    echo "  $0 vtnet1                    # Single WAN interface, main branch"
+    echo "  $0 \"vtnet1 vtnet2\"           # Multiple WAN interfaces, main branch"
+    echo "  $0 vtnet1 ghcwork            # Single WAN interface, ghcwork branch"
+    echo "  $0 \"vtnet1 vtnet2\" develop   # Multiple WAN interfaces, develop branch"
     echo
     echo "This script installs OPNsense HA singleton customizations."
     exit 1
