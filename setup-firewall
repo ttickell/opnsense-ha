@@ -1,46 +1,284 @@
 #!/bin/sh
 
-# space delimitd list of WAN ints (as they appear to ifconfig)
-WAN_INTS="vtnet1"
+# OPNsense HA Singleton Setup Script
+# Comprehensive installer for HA customizations
+# Version: 2.0
 
-HA_REPO="https://github.com/ttickell/opnsense-ha.git"
-WORKDIR="/root/workspace/setup-firewall"
+set -e  # Exit on any error
 
-## Internal stuff
-HA_DIR="${WORKDIR}/opnsense-ha"
-IP_DIR="${WORKDIR}/opnsense-ipv6"
+# Configuration variables
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_VERSION="2.0"
+GITHUB_REPO="https://github.com/ttickell/opnsense-ha.git"
+WORKDIR="/tmp/opnsense-ha-setup"
+BACKUP_DIR="/tmp/ha-setup-backup-$(date +%Y%m%d-%H%M%S)"
 
-## Exit if we error on commands
-exec_error_exit () {
-	local test
-	local res
-	res=$($@ 2>&1)
-	test=$?
-	if [ "$test" -gt 0 ]; then
-		echo "Cloud not run \"$@\" - Exit"
-		echo "$res"
-		exit
-	fi
+# Default WAN interfaces (can be overridden)
+WAN_INTERFACES="${1:-vtnet1}"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Logging functions
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
 }
 
-## Clean Old Crap
-if [ -d "${WORKDIR}" ]; then
-	exec_error_exit "rm -rf ${WORKDIR}"
-fi
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
 
-## Make sure we have git available
-test=$(which git)
-test=$?
-if [ "$test" -eq 1 ]; then
-	error_exit "pkg install -y git"
-fi
+log_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
 
-## Get the repos we need
-exec_error_exit "mkdir -p ${HA_DIR}"
-exec_error_exit "mkdir -p ${IP_DIR}"
-exec_error_exit "git clone ${HA_REPO} ${HA_DIR}"
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
 
-## Install the failover helper
-test=$(cat ${HA_DIR}/usr/local/etc/rc.syshook.d/carp/00-ha-singleton | sed -e "s/__INT_LIST__/${WAN_INTS}/" > /usr/local/etc/rc.syshook.d/carp/00-ha-singleton)
-exec_error_exit "chmod 755 /usr/local/etc/rc.syshook.d/carp/00-ha-singleton"
+# Error handling
+error_exit() {
+    log_error "$1"
+    log_error "Installation failed. Check logs and try again."
+    cleanup
+    exit 1
+}
+
+# Cleanup function
+cleanup() {
+    if [ -d "${WORKDIR}" ]; then
+        rm -rf "${WORKDIR}"
+    fi
+}
+
+# Trap to ensure cleanup on exit
+trap cleanup EXIT
+
+# Function to check if running on OPNsense
+check_opnsense() {
+    if [ ! -f "/usr/local/opnsense/version/opnsense" ]; then
+        error_exit "This script must be run on an OPNsense system"
+    fi
+    
+    local version=$(cat /usr/local/opnsense/version/opnsense)
+    log_info "Detected OPNsense version: ${version}"
+}
+
+# Function to create backup
+create_backup() {
+    log_info "Creating backup in ${BACKUP_DIR}"
+    mkdir -p "${BACKUP_DIR}"
+    
+    # Backup existing files if they exist
+    local files_to_backup="
+        /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
+        /usr/local/etc/ha-singleton.conf
+        /usr/local/bin/ha-ipv6-integration.sh
+        /usr/local/etc/rc.carp_service_status.d/wan_connectivity
+    "
+    
+    for file in ${files_to_backup}; do
+        if [ -f "${file}" ]; then
+            local backup_path="${BACKUP_DIR}$(dirname "${file}")"
+            mkdir -p "${backup_path}"
+            cp "${file}" "${backup_path}/"
+            log_info "Backed up: ${file}"
+        fi
+    done
+}
+
+# Function to install git if needed
+ensure_git() {
+    if ! command -v git >/dev/null 2>&1; then
+        log_info "Installing git..."
+        if ! pkg install -y git; then
+            error_exit "Failed to install git"
+        fi
+        log_success "Git installed successfully"
+    else
+        log_info "Git already installed"
+    fi
+}
+
+# Function to install from GitHub
+install_from_github() {
+    log_info "Installing from GitHub repository..."
+    
+    ensure_git
+    
+    # Clean working directory
+    rm -rf "${WORKDIR}"
+    mkdir -p "${WORKDIR}"
+    
+    # Clone repository
+    log_info "Cloning repository..."
+    if ! git clone "${GITHUB_REPO}" "${WORKDIR}"; then
+        error_exit "Failed to clone repository"
+    fi
+    
+    # Install files from repository
+    install_files_from_directory "${WORKDIR}"
+}
+
+# Function to install files from directory
+install_files_from_directory() {
+    local source_dir="$1"
+    
+    log_info "Installing HA files from ${source_dir}..."
+    
+    # Create necessary directories
+    mkdir -p /usr/local/etc/rc.syshook.d/carp
+    mkdir -p /usr/local/bin
+    mkdir -p /usr/local/etc/rc.carp_service_status.d
+    
+    # Install main CARP script
+    if [ -f "${source_dir}/usr/local/etc/rc.syshook.d/carp/00-ha-singleton" ]; then
+        sed "s/__INT_LIST__/${WAN_INTERFACES}/g" \
+            "${source_dir}/usr/local/etc/rc.syshook.d/carp/00-ha-singleton" > \
+            /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
+        chmod 755 /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
+        log_success "Installed CARP hook script"
+    else
+        error_exit "CARP script not found in source"
+    fi
+    
+    # Install configuration example
+    if [ -f "${source_dir}/usr/local/etc/ha-singleton.conf.example" ]; then
+        if [ ! -f "/usr/local/etc/ha-singleton.conf" ]; then
+            sed "s/vtnet1 vtnet2/${WAN_INTERFACES}/g" \
+                "${source_dir}/usr/local/etc/ha-singleton.conf.example" > \
+                /usr/local/etc/ha-singleton.conf
+            log_success "Installed configuration file"
+        else
+            log_warning "Configuration file already exists, not overwriting"
+        fi
+    fi
+    
+    # Install IPv6 integration script
+    if [ -f "${source_dir}/usr/local/bin/ha-ipv6-integration.sh" ]; then
+        cp "${source_dir}/usr/local/bin/ha-ipv6-integration.sh" /usr/local/bin/
+        chmod 755 /usr/local/bin/ha-ipv6-integration.sh
+        log_success "Installed IPv6 integration script"
+    fi
+    
+    # Install CARP service status check
+    if [ -f "${source_dir}/usr/local/etc/rc.carp_service_status.d/wan_connectivity" ]; then
+        cp "${source_dir}/usr/local/etc/rc.carp_service_status.d/wan_connectivity" \
+           /usr/local/etc/rc.carp_service_status.d/
+        chmod 755 /usr/local/etc/rc.carp_service_status.d/wan_connectivity
+        log_success "Installed CARP service status check"
+    fi
+}
+
+# Function to install using embedded files (fallback)
+install_embedded() {
+    log_warning "GitHub installation failed, using embedded files..."
+    
+    # This would contain the embedded file content
+    # For now, we'll create basic versions
+    
+    error_exit "Embedded installation not implemented. Please ensure internet connectivity for GitHub installation."
+}
+
+# Function to validate installation
+validate_installation() {
+    log_info "Validating installation..."
+    
+    local required_files="
+        /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
+        /usr/local/etc/ha-singleton.conf
+    "
+    
+    for file in ${required_files}; do
+        if [ ! -f "${file}" ]; then
+            error_exit "Required file missing: ${file}"
+        fi
+        
+        if [ ! -x "${file}" ] && [[ "${file}" == *"00-ha-singleton"* ]]; then
+            error_exit "Script not executable: ${file}"
+        fi
+    done
+    
+    log_success "Installation validation passed"
+}
+
+# Function to display post-installation instructions
+show_post_install_info() {
+    log_success "Installation completed successfully!"
+    echo
+    log_info "Next steps:"
+    echo "1. Review and customize /usr/local/etc/ha-singleton.conf"
+    echo "2. Configure CARP VIPs in the OPNsense GUI"
+    echo "3. Set up HA synchronization settings"
+    echo "4. Test failover functionality"
+    echo
+    log_info "Configuration file: /usr/local/etc/ha-singleton.conf"
+    log_info "Main script: /usr/local/etc/rc.syshook.d/carp/00-ha-singleton"
+    log_info "Backup location: ${BACKUP_DIR}"
+    echo
+    log_warning "Remember to configure both primary and secondary firewalls!"
+}
+
+# Main installation function
+main() {
+    echo "================================================"
+    echo "OPNsense HA Singleton Setup Script v${SCRIPT_VERSION}"
+    echo "================================================"
+    echo
+    
+    # Validate environment
+    check_opnsense
+    
+    # Check if running as root
+    if [ "$(id -u)" -ne 0 ]; then
+        error_exit "This script must be run as root"
+    fi
+    
+    log_info "WAN Interfaces: ${WAN_INTERFACES}"
+    echo
+    
+    # Create backup
+    create_backup
+    
+    # Try GitHub installation first
+    if install_from_github 2>/dev/null; then
+        log_success "GitHub installation completed"
+    else
+        log_warning "GitHub installation failed, trying embedded installation"
+        install_embedded
+    fi
+    
+    # Validate installation
+    validate_installation
+    
+    # Show post-installation information
+    show_post_install_info
+}
+
+# Usage information
+usage() {
+    echo "Usage: $0 [WAN_INTERFACES]"
+    echo
+    echo "Examples:"
+    echo "  $0                    # Use default interface (vtnet1)"
+    echo "  $0 vtnet1             # Single WAN interface"
+    echo "  $0 \"vtnet1 vtnet2\"    # Multiple WAN interfaces"
+    echo
+    echo "This script installs OPNsense HA singleton customizations."
+    exit 1
+}
+
+# Check for help flag
+case "${1:-}" in
+    -h|--help|help)
+        usage
+        ;;
+esac
+
+# Run main function
+main "$@"
 

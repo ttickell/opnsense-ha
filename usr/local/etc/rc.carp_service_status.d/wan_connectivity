@@ -1,0 +1,56 @@
+#!/bin/sh
+# CARP Service Status Check for WAN Connectivity
+# This script is used by OPNsense's CARP service status mechanism
+# Place in: /usr/local/etc/rc.carp_service_status.d/wan_connectivity
+
+TAG="carp-wan-connectivity"
+CONFIG_FILE="/usr/local/etc/ha-singleton.conf"
+
+# Default configuration
+WAN_INTERFACES="vtnet1 vtnet2"
+CONNECTIVITY_TIMEOUT="3"
+TEST_HOSTS="8.8.8.8 1.1.1.1"
+
+# Load configuration if available
+if [ -f "${CONFIG_FILE}" ]; then
+    . "${CONFIG_FILE}"
+    WAN_INTERFACES="${WAN_INTS}"
+fi
+
+# Function to test connectivity via interface
+test_interface_connectivity() {
+    local interface=$1
+    
+    # Check if interface is up and has an active status
+    if ! ifconfig "${interface}" | grep -q "status: active"; then
+        return 1
+    fi
+    
+    # Test connectivity through this interface
+    for host in ${TEST_HOSTS}; do
+        if ping -c 1 -W "${CONNECTIVITY_TIMEOUT}000" -I "${interface}" "${host}" >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+    
+    return 1
+}
+
+# Main connectivity test
+connectivity_ok=false
+
+for interface in ${WAN_INTERFACES}; do
+    if test_interface_connectivity "${interface}"; then
+        connectivity_ok=true
+        break
+    fi
+done
+
+if [ "${connectivity_ok}" = "true" ]; then
+    # At least one WAN interface has connectivity
+    exit 0
+else
+    # No WAN interfaces have connectivity - demote CARP
+    logger -p warning -t ${TAG} "No WAN connectivity detected, CARP will be demoted"
+    exit 1
+fi

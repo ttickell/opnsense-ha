@@ -1,0 +1,28 @@
+#!/bin/sh
+# OPNsense HA Singleton Configuration File
+# This file should be copied to /usr/local/etc/ha-singleton.conf and customized
+
+# WAN Interfaces to manage (space-delimited)
+WAN_INTS="vtnet1 vtnet2"
+
+# Services to manage based on CARP status
+SERVICES="rtsold dhcp6c radvd"
+
+# Alternate default routes (backup node's physical addresses)
+ALT_DEFROUTE_IPV4="192.168.105.2"
+ALT_DEFROUTE_IPV6="fd03:17ac:e938:10::2"
+
+# Feature toggles
+ENABLE_IPV6="yes"                    # Enable IPv6 management
+ENABLE_SERVICE_MANAGEMENT="yes"      # Enable service start/stop
+ENABLE_ROUTE_MANAGEMENT="yes"        # Enable backup route management
+DEBUG="no"                          # Enable debug logging
+
+# IPv6 Integration settings
+IPV6_SCRIPT_PATH="/usr/local/bin"    # Path to IPv6 management scripts
+SYNC_IPV6_STATE="yes"               # Sync IPv6 state between nodes
+
+# Advanced settings
+INTERFACE_SETTLE_TIME="2"           # Seconds to wait after interface changes
+SERVICE_STARTUP_DELAY="1"           # Seconds between service starts
+HEALTH_CHECK_ENABLED="yes"          # Enable health checking

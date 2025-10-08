@@ -1,92 +1,347 @@
 #!/bin/sh
 
-TAG="syshook-carp-00-custom"
+# OPNsense HA Singleton CARP Hook Script
+# Manages interface states, services, and routing based on CARP status
+# Version: 2.0
+
+TAG="syshook-carp-ha-singleton"
+LOCKFILE="/var/run/${TAG}.lock"
+CONFIG_FILE="/usr/local/etc/ha-singleton.conf"
+
+# Script arguments
 INTERFACE=$1
 CARP_STATUS=$2
+
+# Default configuration (overridden by config file if it exists)
 WAN_INTS="__INT_LIST__"
 SERVICES="rtsold dhcp6c radvd"
-## Assuming the "real" addresses of the primary firewall
 ALT_DEFROUTE_IPV4="192.168.105.2"
 ALT_DEFROUTE_IPV6="fd03:17ac:e938:10::2"
+ENABLE_IPV6="yes"
+ENABLE_SERVICE_MANAGEMENT="yes"
+ENABLE_ROUTE_MANAGEMENT="yes"
+DEBUG="no"
 
-if [ "${CARP_STATUS}" != "MASTER" ]; then
-	CARP_STATUS="BACKUP"
+# Load configuration file if it exists
+if [ -f "${CONFIG_FILE}" ]; then
+    . "${CONFIG_FILE}"
 fi
 
-logger -p error -t ${TAG} "Called with $INTERFACE / \"$CARP_STATUS\""
+# Lock management functions
+acquire_lock() {
+    if [ -f "${LOCKFILE}" ]; then
+        local pid=$(cat "${LOCKFILE}")
+        if ps -p "${pid}" > /dev/null 2>&1; then
+            logger -p warning -t ${TAG} "Script already running (PID: ${pid}), exiting"
+            exit 0
+        else
+            logger -p info -t ${TAG} "Removing stale lock file"
+            rm -f "${LOCKFILE}"
+        fi
+    fi
+    echo $$ > "${LOCKFILE}"
+}
 
-for WAN_INT in ${WAN_INTS}; do 
-	logger -p error -t ${TAG} "Working on $WAN_INT"
-	cur_status=`ifconfig -l -u | grep ${WAN_INT}`
-	cur_status=$?
+release_lock() {
+    rm -f "${LOCKFILE}"
+}
 
-	## WAN_INT is in "up list":
-	if [ "${cur_status}" -eq 0 ]; then
-		cur_status="UP"
-	else
-		cur_status="DOWN"
-	fi
-	logger -p error -t ${TAG} "FOUND $WAN_INT status as ${cur_status}"
+# Set up exit trap
+trap release_lock EXIT
 
-	echo "CUR_STATUS : \"${cur_status}\""
-	echo "CARP_STATUS: \"${CARP_STATUS}\""
-	if [ "${cur_status}" = "UP" -a "${CARP_STATUS}" = "BACKUP" ]; then
-		logger -p error -t ${TAG} "${WAN_INT} is UP and CARP is BACKUP - bring ${WAN_INT} down"
-		ifconfig ${WAN_INT} down
-	elif [ "${cur_status}" = "DOWN" -a "${CARP_STATUS}" == "MASTER" ]; then
-		logger -p error -t ${TAG} "${WAN_INT} is down and CARP is MASTER - bring ${WAN_INT} up"
-		ifconfig ${WAN_INT} up
-	else
-		logger -p error -t ${TAG} "${WAN_INT} is $cur_status and CARP is ${CARP_STATUS} - no action"
-	fi
-		
-done
+# Validation and initialization
+validate_environment() {
+    if [ -z "${INTERFACE}" ] || [ -z "${CARP_STATUS}" ]; then
+        logger -p error -t ${TAG} "Missing required environment variables: INTERFACE=${INTERFACE} CARP_STATUS=${CARP_STATUS}"
+        exit 1
+    fi
+    
+    # Normalize CARP status
+    case "${CARP_STATUS}" in
+        "MASTER")
+            ;;
+        "BACKUP")
+            ;;
+        "INIT")
+            logger -p info -t ${TAG} "CARP in INIT state, treating as BACKUP"
+            CARP_STATUS="BACKUP"
+            ;;
+        *)
+            logger -p warning -t ${TAG} "Unknown CARP status: ${CARP_STATUS}, treating as BACKUP"
+            CARP_STATUS="BACKUP"
+            ;;
+    esac
+}
 
-## ensure sevices that need to be up or down are up or down
-for service in ${SERVICES}; do
- 	status=$(service ${service} status)
-	status=$?
-	if [ "$status" -eq 0 -a "${CARP_STATUS}" != "MASTER" ]; then
-		# Service is running but we are not master
-		logger -p error -t ${TAG} "Stopping ${service}"
-		service ${service} onestop
-	elif [ "$status" -gt 0 -a "${CARP_STATUS}" = "MASTER" ]; then
-		# Service is not running, but we are master
-		logger -p error -t ${TAG} "Starting ${service}"
-		## This really shouldn't be needed, but OPNsense is starting 
-		##  services someway I can't find - they don't start the same
-		##  with "service xxxxxxx start" as they do however OPNsense 
-		##  is doing this.   Redo this block when I know
-		case ${service} in
-			rtsold)
-				/usr/sbin/rtsold -aiu -p /var/run/rtsold.pid -A /var/etc/rtsold_script.sh -R /usr/local/opnsense/scripts/interfaces/rtsold_resolvconf.sh
-			;;
-			radvd)
-				/usr/local/sbin/radvd -p /var/run/radvd.pid -C /var/etc/radvd.conf -m syslog
-			;;
-			dhcp6c)
-				/usr/local/sbin/dhcp6c -c /var/etc/dhcp6c.conf -p /var/run/dhcp6c.pid
-			;;
-		esac
-	fi
-done
+# Debug logging function
+debug_log() {
+    if [ "${DEBUG}" = "yes" ]; then
+        logger -p info -t ${TAG} "[DEBUG] $1"
+    fi
+}
 
-## Other Cleanups
-ipv4_route_status=$(netstat -rn | grep default | grep "${ALT_DEFROUTE_IPV4}")
-ipv4_route_status=$?
-ipv6_route_status=$(netstat -rn | grep default | grep "${ALT_DEFROUTE_IPV6}")
-ipv6_route_status=$?
+# Initialize
+acquire_lock
+validate_environment
 
+logger -p info -t ${TAG} "Processing CARP event: ${INTERFACE} -> ${CARP_STATUS}"
+debug_log "Configuration: WAN_INTS=${WAN_INTS}, IPv6=${ENABLE_IPV6}, Services=${ENABLE_SERVICE_MANAGEMENT}"
 
-if [ "${CARP_STATUS}" = "MASTER" ]; then
-	# If we are becoming MASTER AND if we have an alt default route -
-	#   then we don't want the default route any more
-	[ "$ipv4_route_status" -eq 0 ] && route del default "${ALT_DEFROUTE_IPV4}"
-	[ "$ipv6_route_status" -eq 0 ] && route -6 del default "${ALT_DEFROUTE_IPV6}"
-else
-	# If we are becomign BACKUP AND if we do NOT have alt default route -
-	#   then add one so we can still talk to the rest of the world
-	[ "$ipv4_route_status" -gt 0 ] && route add default "${ALT_DEFROUTE_IPV4}"
-	[ "$ipv6_route_status" -gt 0 ] && route -6 add default "${ALT_DEFROUTE_IPV6}"
-fi
+# Interface management functions
+get_interface_status() {
+    local interface=$1
+    if ifconfig -l -u | grep -q "${interface}"; then
+        echo "UP"
+    else
+        echo "DOWN"
+    fi
+}
+
+manage_wan_interfaces() {
+    logger -p info -t ${TAG} "Managing WAN interfaces for CARP status: ${CARP_STATUS}"
+    
+    for WAN_INT in ${WAN_INTS}; do
+        # Validate interface exists
+        if ! ifconfig "${WAN_INT}" >/dev/null 2>&1; then
+            logger -p warning -t ${TAG} "Interface ${WAN_INT} does not exist, skipping"
+            continue
+        fi
+        
+        local cur_status=$(get_interface_status "${WAN_INT}")
+        debug_log "Interface ${WAN_INT} current status: ${cur_status}"
+        
+        case "${CARP_STATUS}" in
+            "MASTER")
+                if [ "${cur_status}" = "DOWN" ]; then
+                    logger -p info -t ${TAG} "Bringing up ${WAN_INT} (CARP MASTER)"
+                    if ! configctl interface enable "${WAN_INT}" 2>/dev/null; then
+                        logger -p warning -t ${TAG} "configctl failed, using ifconfig for ${WAN_INT}"
+                        ifconfig "${WAN_INT}" up
+                    fi
+                else
+                    debug_log "${WAN_INT} already UP, no action needed"
+                fi
+                ;;
+            "BACKUP")
+                if [ "${cur_status}" = "UP" ]; then
+                    logger -p info -t ${TAG} "Bringing down ${WAN_INT} (CARP BACKUP)"
+                    if ! configctl interface disable "${WAN_INT}" 2>/dev/null; then
+                        logger -p warning -t ${TAG} "configctl failed, using ifconfig for ${WAN_INT}"
+                        ifconfig "${WAN_INT}" down
+                    fi
+                else
+                    debug_log "${WAN_INT} already DOWN, no action needed"
+                fi
+                ;;
+        esac
+    done
+}
+
+# Service management functions
+check_service_status() {
+    local service=$1
+    service "${service}" status >/dev/null 2>&1
+    return $?
+}
+
+start_service() {
+    local service=$1
+    logger -p info -t ${TAG} "Starting service: ${service}"
+    
+    # Try configctl first, fall back to custom commands
+    if ! configctl "${service}" start 2>/dev/null; then
+        case "${service}" in
+            rtsold)
+                /usr/sbin/rtsold -aiu -p /var/run/rtsold.pid -A /var/etc/rtsold_script.sh -R /usr/local/opnsense/scripts/interfaces/rtsold_resolvconf.sh
+                ;;
+            radvd)
+                /usr/local/sbin/radvd -p /var/run/radvd.pid -C /var/etc/radvd.conf -m syslog
+                ;;
+            dhcp6c)
+                /usr/local/sbin/dhcp6c -c /var/etc/dhcp6c.conf -p /var/run/dhcp6c.pid
+                ;;
+            *)
+                logger -p warning -t ${TAG} "Unknown service: ${service}"
+                return 1
+                ;;
+        esac
+    fi
+}
+
+stop_service() {
+    local service=$1
+    logger -p info -t ${TAG} "Stopping service: ${service}"
+    
+    if ! configctl "${service}" stop 2>/dev/null; then
+        service "${service}" onestop
+    fi
+}
+
+manage_services() {
+    if [ "${ENABLE_SERVICE_MANAGEMENT}" != "yes" ]; then
+        debug_log "Service management disabled, skipping"
+        return
+    fi
+    
+    logger -p info -t ${TAG} "Managing services for CARP status: ${CARP_STATUS}"
+    
+    for service in ${SERVICES}; do
+        if check_service_status "${service}"; then
+            local service_running=true
+        else
+            local service_running=false
+        fi
+        
+        debug_log "Service ${service} running: ${service_running}"
+        
+        case "${CARP_STATUS}" in
+            "MASTER")
+                if [ "${service_running}" = "false" ]; then
+                    start_service "${service}"
+                else
+                    debug_log "Service ${service} already running"
+                fi
+                ;;
+            "BACKUP")
+                if [ "${service_running}" = "true" ]; then
+                    stop_service "${service}"
+                else
+                    debug_log "Service ${service} already stopped"
+                fi
+                ;;
+        esac
+    done
+}
+
+# Route management functions
+check_route_exists() {
+    local route_ip=$1
+    local family=$2
+    
+    case "${family}" in
+        "ipv4")
+            netstat -rn | grep -q "default.*${route_ip}"
+            ;;
+        "ipv6")
+            netstat -rn | grep -q "default.*${route_ip}"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+manage_routes() {
+    if [ "${ENABLE_ROUTE_MANAGEMENT}" != "yes" ]; then
+        debug_log "Route management disabled, skipping"
+        return
+    fi
+    
+    logger -p info -t ${TAG} "Managing backup routes for CARP status: ${CARP_STATUS}"
+    
+    # Check current route status
+    if check_route_exists "${ALT_DEFROUTE_IPV4}" "ipv4"; then
+        local ipv4_alt_route_exists=true
+    else
+        local ipv4_alt_route_exists=false
+    fi
+    
+    if [ "${ENABLE_IPV6}" = "yes" ] && check_route_exists "${ALT_DEFROUTE_IPV6}" "ipv6"; then
+        local ipv6_alt_route_exists=true
+    else
+        local ipv6_alt_route_exists=false
+    fi
+    
+    debug_log "IPv4 alt route exists: ${ipv4_alt_route_exists}, IPv6 alt route exists: ${ipv6_alt_route_exists}"
+    
+    case "${CARP_STATUS}" in
+        "MASTER")
+            # Remove alternate routes when becoming master
+            if [ "${ipv4_alt_route_exists}" = "true" ]; then
+                logger -p info -t ${TAG} "Removing IPv4 alternate default route"
+                route delete default "${ALT_DEFROUTE_IPV4}" 2>/dev/null || true
+            fi
+            
+            if [ "${ENABLE_IPV6}" = "yes" ] && [ "${ipv6_alt_route_exists}" = "true" ]; then
+                logger -p info -t ${TAG} "Removing IPv6 alternate default route"
+                route -6 delete default "${ALT_DEFROUTE_IPV6}" 2>/dev/null || true
+            fi
+            ;;
+        "BACKUP")
+            # Add alternate routes when becoming backup
+            if [ "${ipv4_alt_route_exists}" = "false" ]; then
+                logger -p info -t ${TAG} "Adding IPv4 alternate default route"
+                route add default "${ALT_DEFROUTE_IPV4}" 2>/dev/null || true
+            fi
+            
+            if [ "${ENABLE_IPV6}" = "yes" ] && [ "${ipv6_alt_route_exists}" = "false" ]; then
+                logger -p info -t ${TAG} "Adding IPv6 alternate default route"
+                route -6 add default "${ALT_DEFROUTE_IPV6}" 2>/dev/null || true
+            fi
+            ;;
+    esac
+}
+
+# IPv6 integration functions
+trigger_ipv6_updates() {
+    if [ "${ENABLE_IPV6}" != "yes" ]; then
+        return
+    fi
+    
+    # Trigger IPv6 prefix delegation updates if scripts exist
+    if [ -x "/usr/local/bin/dhcp6c-ula-mapping.py" ]; then
+        debug_log "Triggering IPv6 prefix updates"
+        /usr/local/bin/dhcp6c-ula-mapping.py 2>/dev/null || true
+    fi
+    
+    # Update CARP service status for IPv6
+    if [ -x "/usr/local/bin/configctl" ]; then
+        configctl interface update carp service_status 2>/dev/null || true
+    fi
+}
+
+# Health check function
+perform_health_checks() {
+    local exit_code=0
+    
+    # Check if critical interfaces exist
+    for WAN_INT in ${WAN_INTS}; do
+        if ! ifconfig "${WAN_INT}" >/dev/null 2>&1; then
+            logger -p error -t ${TAG} "Critical interface ${WAN_INT} missing"
+            exit_code=1
+        fi
+    done
+    
+    # Check if we're in a reasonable state
+    if [ "${CARP_STATUS}" = "MASTER" ]; then
+        for WAN_INT in ${WAN_INTS}; do
+            if [ "$(get_interface_status "${WAN_INT}")" = "DOWN" ]; then
+                logger -p warning -t ${TAG} "Master node has interface ${WAN_INT} down"
+            fi
+        done
+    fi
+    
+    return ${exit_code}
+}
+
+# Main execution
+main() {
+    logger -p info -t ${TAG} "Starting HA failover processing"
+    
+    # Perform health checks
+    if ! perform_health_checks; then
+        logger -p error -t ${TAG} "Health checks failed, continuing with limited functionality"
+    fi
+    
+    # Execute management functions
+    manage_wan_interfaces
+    manage_services
+    manage_routes
+    trigger_ipv6_updates
+    
+    logger -p info -t ${TAG} "HA failover processing completed successfully"
+}
+
+# Execute main function
+main
 
