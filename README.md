@@ -4,7 +4,7 @@ A comprehensive solution for OPNsense High Availability setup with CARP failover
 
 ## Project Overview
 
-This project provides automated failover management for OPNsense firewalls in a dual-WAN environment with both IPv4 and IPv6 support. It includes intelligent interface management, service control, and route management based on CARP status.
+This project provides automated failover management for OPNsense firewalls with support for any number of WAN interfaces, IPv4 and IPv6 support. It includes intelligent interface management, service control, and route management based on CARP status.
 
 ## Features
 
