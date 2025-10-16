@@ -1,0 +1,3 @@
+[submodule "opnsense-core"]
+	path = opnsense-core
+	url = https://github.com/opnsense/core.git

@@ -116,8 +116,8 @@ manage_wan_interfaces() {
             "MASTER")
                 if [ "${cur_status}" = "DOWN" ]; then
                     logger -p info -t ${TAG} "Bringing up ${WAN_INT} (CARP MASTER)"
-                    if ! configctl interface enable "${WAN_INT}" 2>/dev/null; then
-                        logger -p warning -t ${TAG} "configctl failed, using ifconfig for ${WAN_INT}"
+                    if ! configctl interface linkup.start "${WAN_INT}" 2>/dev/null; then
+                        logger -p warning -t ${TAG} "configctl linkup failed, using ifconfig for ${WAN_INT}"
                         ifconfig "${WAN_INT}" up
                     fi
                 else
@@ -127,8 +127,8 @@ manage_wan_interfaces() {
             "BACKUP")
                 if [ "${cur_status}" = "UP" ]; then
                     logger -p info -t ${TAG} "Bringing down ${WAN_INT} (CARP BACKUP)"
-                    if ! configctl interface disable "${WAN_INT}" 2>/dev/null; then
-                        logger -p warning -t ${TAG} "configctl failed, using ifconfig for ${WAN_INT}"
+                    if ! configctl interface linkup.stop "${WAN_INT}" 2>/dev/null; then
+                        logger -p warning -t ${TAG} "configctl linkup failed, using ifconfig for ${WAN_INT}"
                         ifconfig "${WAN_INT}" down
                     fi
                 else
@@ -150,33 +150,49 @@ start_service() {
     local service=$1
     logger -p info -t ${TAG} "Starting service: ${service}"
     
-    # Try configctl first, fall back to custom commands
-    if ! configctl "${service}" start 2>/dev/null; then
-        case "${service}" in
-            rtsold)
-                /usr/sbin/rtsold -aiu -p /var/run/rtsold.pid -A /var/etc/rtsold_script.sh -R /usr/local/opnsense/scripts/interfaces/rtsold_resolvconf.sh
-                ;;
-            radvd)
-                /usr/local/sbin/radvd -p /var/run/radvd.pid -C /var/etc/radvd.conf -m syslog
-                ;;
-            dhcp6c)
-                /usr/local/sbin/dhcp6c -c /var/etc/dhcp6c.conf -p /var/run/dhcp6c.pid
-                ;;
-            *)
-                logger -p warning -t ${TAG} "Unknown service: ${service}"
+    # Skip configctl for IPv6 services that don't have configctl actions
+    case "${service}" in
+        rtsold|dhcp6c|radvd)
+            # Use direct daemon commands for IPv6 services
+            case "${service}" in
+                rtsold)
+                    /usr/sbin/rtsold -aiu -p /var/run/rtsold.pid -A /var/etc/rtsold_script.sh -R /usr/local/opnsense/scripts/interfaces/rtsold_resolvconf.sh
+                    ;;
+                radvd)
+                    /usr/local/sbin/radvd -p /var/run/radvd.pid -C /var/etc/radvd.conf -m syslog
+                    ;;
+                dhcp6c)
+                    /usr/local/sbin/dhcp6c -c /var/etc/dhcp6c.conf -p /var/run/dhcp6c.pid
+                    ;;
+            esac
+            ;;
+        *)
+            # Try configctl for other services
+            if ! configctl "${service}" start 2>/dev/null; then
+                logger -p warning -t ${TAG} "Unknown service for configctl: ${service}"
                 return 1
-                ;;
-        esac
-    fi
+            fi
+            ;;
+    esac
 }
 
 stop_service() {
     local service=$1
     logger -p info -t ${TAG} "Stopping service: ${service}"
     
-    if ! configctl "${service}" stop 2>/dev/null; then
-        service "${service}" onestop
-    fi
+    # Skip configctl for IPv6 services that don't have configctl actions  
+    case "${service}" in
+        rtsold|dhcp6c|radvd)
+            # Use FreeBSD service management for IPv6 services
+            service "${service}" onestop
+            ;;
+        *)
+            # Try configctl for other services
+            if ! configctl "${service}" stop 2>/dev/null; then
+                service "${service}" onestop
+            fi
+            ;;
+    esac
 }
 
 manage_services() {
