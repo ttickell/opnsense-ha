@@ -1,3 +1,6 @@
 [submodule "opnsense-core"]
 	path = opnsense-core
 	url = https://github.com/opnsense/core.git
+[submodule "opnsense-docs"]
+	path = opnsense-docs
+	url = https://github.com/opnsense/docs.git

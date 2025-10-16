@@ -2,7 +2,13 @@
 
 # OPNsense HA Singleton CARP Hook Script
 # Manages interface states, services, and routing based on CARP status
-# Version: 2.0
+# Version: 2.2 - Enhanced with OPNsense best practices
+#
+# Implementation Notes:
+# - Uses configctl interface linkup.start/stop (validated against OPNsense source)
+# - Direct service management for IPv6 services (matches OPNsense patterns)
+# - Compatible with interface_suspend() patterns used in OPNsense 20-ppp hook
+# - Supports service status integration via configctl interface update carp service_status
 
 TAG="syshook-carp-ha-singleton"
 LOCKFILE="/var/run/${TAG}.lock"
@@ -356,6 +362,12 @@ main() {
     manage_services
     manage_routes
     trigger_ipv6_updates
+    
+    # Update CARP service status (OPNsense HA health monitoring integration)
+    if command -v configctl >/dev/null 2>&1; then
+        logger -p debug -t ${TAG} "Updating CARP service status"
+        configctl interface update carp service_status 2>/dev/null || true
+    fi
     
     logger -p info -t ${TAG} "HA failover processing completed successfully"
 }
