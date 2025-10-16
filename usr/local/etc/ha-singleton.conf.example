@@ -1,16 +1,23 @@
 #!/bin/sh
 # OPNsense HA Singleton Configuration File
+# Universal configuration that works for any number of WAN interfaces
 # This file should be copied to /usr/local/etc/ha-singleton.conf and customized
 
 # WAN Interfaces to manage (space-delimited)
+# Examples: 
+#   Single WAN: "vtnet1"
+#   Dual WAN:   "vtnet1 vtnet2"  
+#   Multi WAN:  "vtnet1 vtnet2 vtnet3"
 WAN_INTS="vtnet1 vtnet2"
 
 # Services to manage based on CARP status
 SERVICES="rtsold dhcp6c radvd"
 
-# Alternate default routes (backup node's physical addresses)
-ALT_DEFROUTE_IPV4="192.168.105.2"
-ALT_DEFROUTE_IPV6="fd03:17ac:e938:10::2"
+# Alternate default routes (for BACKUP state)
+# When this firewall is BACKUP, it routes through the PRIMARY firewall's LAN IP
+# Set these to the PRIMARY firewall's LAN interface addresses
+ALT_DEFROUTE_IPV4="192.168.1.2"     # Primary firewall's LAN IP
+ALT_DEFROUTE_IPV6="fd00::2"          # Primary firewall's IPv6 LAN IP
 
 # Feature toggles
 ENABLE_IPV6="yes"                    # Enable IPv6 management

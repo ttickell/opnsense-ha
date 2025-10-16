@@ -1,0 +1,10 @@
+#!/bin/sh
+# Simple debug logging utility for HA scripts
+# Usage: debug_log "message"
+
+TAG="ha-debug"
+MESSAGE="$1"
+
+if [ -n "${MESSAGE}" ]; then
+    logger -p info -t "${TAG}" "[DEBUG] ${MESSAGE}"
+fi

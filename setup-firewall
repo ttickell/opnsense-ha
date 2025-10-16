@@ -2,13 +2,13 @@
 
 # OPNsense HA Singleton Setup Script
 # Comprehensive installer for HA customizations
-# Version: 2.0
+# Version: 2.1 - Universal HA Logic (works for any number of WAN interfaces)
 
 set -e  # Exit on any error
 
 # Configuration variables
 SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="2.0"
+SCRIPT_VERSION="2.1"
 GITHUB_REPO="https://github.com/ttickell/opnsense-ha.git"
 WORKDIR="/tmp/opnsense-ha-setup"
 BACKUP_DIR="/tmp/ha-setup-backup-$(date +%Y%m%d-%H%M%S)"
@@ -61,12 +61,21 @@ trap cleanup EXIT
 
 # Function to check if running on OPNsense
 check_opnsense() {
-    if [ ! -f "/usr/local/opnsense/version/opnsense" ]; then
+    # Check for OPNsense installation - multiple possible locations
+    if [ -f "/usr/local/opnsense/version/opnsense" ]; then
+        local version=$(cat /usr/local/opnsense/version/opnsense)
+        log_info "Detected OPNsense version: ${version}"
+    elif [ -f "/usr/local/opnsense/version/core" ]; then
+        # Try to extract version from core file (JSON format)
+        if command -v jq >/dev/null 2>&1; then
+            local version=$(jq -r '.product_version' /usr/local/opnsense/version/core 2>/dev/null || echo "unknown")
+        else
+            local version=$(grep -o '"product_version":"[^"]*"' /usr/local/opnsense/version/core 2>/dev/null | cut -d'"' -f4 || echo "unknown")
+        fi
+        log_info "Detected OPNsense version: ${version}"
+    else
         error_exit "This script must be run on an OPNsense system"
     fi
-    
-    local version=$(cat /usr/local/opnsense/version/opnsense)
-    log_info "Detected OPNsense version: ${version}"
 }
 
 # Function to create backup
@@ -164,35 +173,14 @@ install_files_from_directory() {
         error_exit "CARP script not found in source"
     fi
     
-    # Install configuration example
+    # Install configuration template
     if [ -f "${source_dir}/usr/local/etc/ha-singleton.conf.example" ]; then
         if [ ! -f "/usr/local/etc/ha-singleton.conf" ]; then
-            # Count WAN interfaces to determine which config template to use
-            local wan_count=0
-            for interface in ${WAN_INTERFACES}; do
-                wan_count=$((wan_count + 1))
-            done
-            
-            if [ ${wan_count} -eq 1 ]; then
-                # Use single WAN configuration if available
-                if [ -f "${source_dir}/usr/local/etc/ha-singleton-single-wan.conf.example" ]; then
-                    log_info "Using single WAN configuration template"
-                    sed "s/vtnet1/${WAN_INTERFACES}/g" \
-                        "${source_dir}/usr/local/etc/ha-singleton-single-wan.conf.example" > \
-                        /usr/local/etc/ha-singleton.conf
-                else
-                    # Fallback to regular config
-                    sed "s/vtnet1 vtnet2/${WAN_INTERFACES}/g" \
-                        "${source_dir}/usr/local/etc/ha-singleton.conf.example" > \
-                        /usr/local/etc/ha-singleton.conf
-                fi
-            else
-                # Use multi-WAN configuration
-                sed "s/vtnet1 vtnet2/${WAN_INTERFACES}/g" \
-                    "${source_dir}/usr/local/etc/ha-singleton.conf.example" > \
-                    /usr/local/etc/ha-singleton.conf
-            fi
-            log_success "Installed configuration file"
+            # Use universal configuration template
+            sed "s/vtnet1 vtnet2/${WAN_INTERFACES}/g" \
+                "${source_dir}/usr/local/etc/ha-singleton.conf.example" > \
+                /usr/local/etc/ha-singleton.conf
+            log_success "Installed universal configuration file"
         else
             log_warning "Configuration file already exists, not overwriting"
         fi
@@ -203,6 +191,13 @@ install_files_from_directory() {
         cp "${source_dir}/usr/local/bin/ha-ipv6-integration.sh" /usr/local/bin/
         chmod 755 /usr/local/bin/ha-ipv6-integration.sh
         log_success "Installed IPv6 integration script"
+    fi
+    
+    # Install debug logging utility
+    if [ -f "${source_dir}/usr/local/bin/debug_log" ]; then
+        cp "${source_dir}/usr/local/bin/debug_log" /usr/local/bin/
+        chmod 755 /usr/local/bin/debug_log
+        log_success "Installed debug logging utility"
     fi
     
     # Install CARP service status check

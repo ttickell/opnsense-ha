@@ -27,20 +27,7 @@ if [ -f "${CONFIG_FILE}" ]; then
     . "${CONFIG_FILE}"
 fi
 
-# Count WAN interfaces for single WAN optimizations
-WAN_INTERFACE_COUNT=0
-for interface in ${WAN_INTS}; do
-    WAN_INTERFACE_COUNT=$((WAN_INTERFACE_COUNT + 1))
-done
 
-# Single WAN mode detection
-if [ ${WAN_INTERFACE_COUNT} -eq 1 ]; then
-    SINGLE_WAN_MODE="yes"
-    debug_log "Single WAN mode detected with interface: ${WAN_INTS}"
-else
-    SINGLE_WAN_MODE="no"
-    debug_log "Multi-WAN mode detected with ${WAN_INTERFACE_COUNT} interfaces"
-fi
 
 # Lock management functions
 acquire_lock() {
@@ -100,7 +87,7 @@ acquire_lock
 validate_environment
 
 logger -p info -t ${TAG} "Processing CARP event: ${INTERFACE} -> ${CARP_STATUS}"
-debug_log "Configuration: WAN_INTS=${WAN_INTS} (${WAN_INTERFACE_COUNT} interfaces), Mode=${SINGLE_WAN_MODE}, IPv6=${ENABLE_IPV6}, Services=${ENABLE_SERVICE_MANAGEMENT}"
+debug_log "Configuration: WAN_INTS=${WAN_INTS}, IPv6=${ENABLE_IPV6}, Services=${ENABLE_SERVICE_MANAGEMENT}"
 
 # Interface management functions
 get_interface_status() {
@@ -252,12 +239,7 @@ manage_routes() {
         return
     fi
     
-    # In single WAN mode, backup routes are more critical for backup node connectivity
-    if [ "${SINGLE_WAN_MODE}" = "yes" ]; then
-        logger -p info -t ${TAG} "Managing backup routes for single WAN CARP status: ${CARP_STATUS}"
-    else
-        logger -p info -t ${TAG} "Managing backup routes for multi-WAN CARP status: ${CARP_STATUS}"
-    fi
+    logger -p info -t ${TAG} "Managing backup routes for CARP status: ${CARP_STATUS}"
     
     # Check current route status
     if check_route_exists "${ALT_DEFROUTE_IPV4}" "ipv4"; then
@@ -339,18 +321,6 @@ perform_health_checks() {
                 logger -p warning -t ${TAG} "Master node has interface ${WAN_INT} down"
             fi
         done
-    fi
-    
-    # Single WAN specific health checks
-    if [ "${SINGLE_WAN_MODE}" = "yes" ] && [ "${CARP_STATUS}" = "BACKUP" ]; then
-        # In single WAN backup mode, verify we can reach the backup node
-        if [ -n "${BACKUP_NODE_IP:-}" ]; then
-            if ping -c 1 -W 3 "${BACKUP_NODE_IP}" >/dev/null 2>&1; then
-                debug_log "Backup node connectivity OK: ${BACKUP_NODE_IP}"
-            else
-                logger -p warning -t ${TAG} "Cannot reach backup node: ${BACKUP_NODE_IP}"
-            fi
-        fi
     fi
     
     return ${exit_code}
