@@ -6,6 +6,14 @@
 
 ## 🔄 Phase 1: HA Failover Testing & Refinement
 
+**Test Environment Network Topology** (See NETWORK-TOPOLOGY.md for details):
+- **WAN**: 192.168.50.0/24 (DHCP), fd03:17ac:e938:16::/64
+- **LAN**: 192.168.51.0/24, fd03:17ac:e938:1f00::/64
+- **Primary LAN**: 192.168.51.2, fd03:17ac:e938:1f00::2  
+- **Secondary LAN**: 192.168.51.3, fd03:17ac:e938:1f00::3
+- **CARP VIP**: 192.168.51.1, fd03:17ac:e938:1f00::1
+- **PFSYNC**: 192.168.103.0/29
+
 ### 1.1 Core HA Testing
 - [ ] **Test Primary → Backup failover scenarios**
   - [ ] Graceful primary shutdown (CARP transitions)
