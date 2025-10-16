@@ -13,6 +13,72 @@ GITHUB_REPO="https://github.com/ttickell/opnsense-ha.git"
 WORKDIR="/tmp/opnsense-ha-setup"
 BACKUP_DIR="/tmp/ha-setup-backup-$(date +%Y%m%d-%H%M%S)"
 
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Logging functions
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+log_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Error handling
+error_exit() {
+    log_error "$1"
+    log_error "Installation failed. Check logs and try again."
+    cleanup
+    exit 1
+}
+
+# Cleanup function
+cleanup() {
+    if [ -d "${WORKDIR}" ]; then
+        rm -rf "${WORKDIR}"
+    fi
+}
+
+# Trap to ensure cleanup on exit
+trap cleanup EXIT
+
+# Usage information
+usage() {
+    echo "Usage: $0 [OPTIONS] [WAN_INTERFACES] [BRANCH_NAME]"
+    echo
+    echo "Options:"
+    echo "  --cleanup, -c         Clean existing HA installation before installing"
+    echo "  --help, -h           Show this help message"
+    echo
+    echo "Parameters:"
+    echo "  WAN_INTERFACES    Space-delimited list of WAN interface names (default: vtnet1)"
+    echo "  BRANCH_NAME       Git branch to use for installation (default: main)"
+    echo
+    echo "Examples:"
+    echo "  $0                           # Use defaults (vtnet1, main branch)"
+    echo "  $0 --cleanup vtnet1          # Clean first, then install single WAN"
+    echo "  $0 vtnet1                    # Single WAN interface, main branch"
+    echo "  $0 \"vtnet1 vtnet2\"           # Multiple WAN interfaces, main branch"
+    echo "  $0 vtnet1 ghcwork            # Single WAN interface, ghcwork branch"
+    echo "  $0 --cleanup \"vtnet1 vtnet2\" develop  # Clean first, multi-WAN, develop branch"
+    echo
+    echo "This script installs OPNsense HA singleton customizations."
+    exit 1
+}
+
 # Parse command line arguments
 CLEANUP_FIRST=false
 WAN_INTERFACES=""
@@ -69,48 +135,6 @@ done
 # Set defaults if not provided
 WAN_INTERFACES="${WAN_INTERFACES:-vtnet1}"
 BRANCH_NAME="${BRANCH_NAME:-main}"
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-# Logging functions
-log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# Error handling
-error_exit() {
-    log_error "$1"
-    log_error "Installation failed. Check logs and try again."
-    cleanup
-    exit 1
-}
-
-# Cleanup function
-cleanup() {
-    if [ -d "${WORKDIR}" ]; then
-        rm -rf "${WORKDIR}"
-    fi
-}
-
-# Trap to ensure cleanup on exit
-trap cleanup EXIT
 
 # Function to check if running on OPNsense
 check_opnsense() {
@@ -387,31 +411,7 @@ main() {
     show_post_install_info
 }
 
-# Usage information
-usage() {
-    echo "Usage: $0 [OPTIONS] [WAN_INTERFACES] [BRANCH_NAME]"
-    echo
-    echo "Options:"
-    echo "  --cleanup, -c         Clean existing HA installation before installing"
-    echo "  --help, -h           Show this help message"
-    echo
-    echo "Parameters:"
-    echo "  WAN_INTERFACES    Space-delimited list of WAN interface names (default: vtnet1)"
-    echo "  BRANCH_NAME       Git branch to use for installation (default: main)"
-    echo
-    echo "Examples:"
-    echo "  $0                           # Use defaults (vtnet1, main branch)"
-    echo "  $0 --cleanup vtnet1          # Clean first, then install single WAN"
-    echo "  $0 vtnet1                    # Single WAN interface, main branch"
-    echo "  $0 \"vtnet1 vtnet2\"           # Multiple WAN interfaces, main branch"
-    echo "  $0 vtnet1 ghcwork            # Single WAN interface, ghcwork branch"
-    echo "  $0 --cleanup \"vtnet1 vtnet2\" develop  # Clean first, multi-WAN, develop branch"
-    echo
-    echo "This script installs OPNsense HA singleton customizations."
-    exit 1
-}
-
-# Check for help flag
+# Check for help flag before processing arguments
 case "${1:-}" in
     -h|--help|help)
         usage
