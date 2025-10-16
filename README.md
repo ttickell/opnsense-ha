@@ -29,24 +29,150 @@ This project provides automated failover management for OPNsense firewalls with 
 
 ## Quick Start
 
-### Installation
+### Automated Installation with setup-firewall
+
+The `setup-firewall` script provides comprehensive automated installation of the HA solution with intelligent WAN interface detection and configuration.
+
+#### Basic Installation
 
 ```bash
-# Download and run the installer
+# Download and run with defaults (vtnet1, main branch)
 curl -sSL https://raw.githubusercontent.com/ttickell/opnsense-ha/main/setup-firewall | sh
 
-# Or with custom WAN interfaces
-curl -sSL https://raw.githubusercontent.com/ttickell/opnsense-ha/main/setup-firewall | sh -s "vtnet1 vtnet2"
+# Or download and run locally
+wget https://raw.githubusercontent.com/ttickell/opnsense-ha/main/setup-firewall
+chmod +x setup-firewall
+./setup-firewall
 ```
 
-### Manual Installation
+#### Advanced Installation Options
+
+```bash
+# Single WAN interface
+./setup-firewall vtnet1
+
+# Multiple WAN interfaces
+./setup-firewall "vtnet1 vtnet2"
+
+# Specific git branch
+./setup-firewall "vtnet1 vtnet2" ghcwork
+
+# Clean existing installation first
+./setup-firewall --cleanup "vtnet1 vtnet2"
+
+# Clean and install from development branch
+./setup-firewall --cleanup "vtnet1 vtnet2" develop
+```
+
+#### Setup Script Usage
+
+```bash
+Usage: setup-firewall [OPTIONS] [WAN_INTERFACES] [BRANCH_NAME]
+
+Options:
+  --cleanup, -c         Clean existing HA installation before installing
+  --help, -h           Show help message
+
+Parameters:
+  WAN_INTERFACES    Space-delimited list of WAN interface names (default: vtnet1)
+  BRANCH_NAME       Git branch to use for installation (default: main)
+
+Examples:
+  ./setup-firewall                          # Use defaults (vtnet1, main)
+  ./setup-firewall --cleanup vtnet1         # Clean first, single WAN
+  ./setup-firewall "vtnet1 vtnet2"          # Multiple WAN interfaces
+  ./setup-firewall vtnet1 ghcwork           # Specific branch
+  ./setup-firewall --cleanup "vtnet1 vtnet2" develop  # Full custom install
+```
+
+#### What the Setup Script Does
+
+1. **Environment Validation**:
+   - Verifies running on OPNsense system
+   - Checks for root privileges
+   - Validates branch names and interface parameters
+
+2. **Backup Creation**:
+   - Creates timestamped backup in `/tmp/ha-setup-backup-YYYYMMDD-HHMMSS/`
+   - Backs up existing configuration files
+   - Preserves current settings for rollback
+
+3. **Installation Process**:
+   - Installs git if not present
+   - Clones repository from specified branch
+   - Creates necessary directory structure
+   - Installs and configures all components
+
+4. **File Installation**:
+   - `/usr/local/etc/rc.syshook.d/carp/00-ha-singleton` - Main CARP hook script
+   - `/usr/local/etc/ha-singleton.conf` - Configuration file (customized for your WANs)
+   - `/usr/local/bin/ha-ipv6-integration.sh` - IPv6 integration utilities
+   - `/usr/local/etc/rc.carp_service_status.d/wan_connectivity` - Health monitoring
+
+5. **Configuration**:
+   - Automatically substitutes WAN interface names in configuration
+   - Sets appropriate file permissions
+   - Creates universal configuration template
+
+6. **Validation**:
+   - Verifies all required files are installed
+   - Checks file permissions and executability
+   - Confirms installation integrity
+
+#### Post-Installation Verification
+
+After running the setup script, verify the installation:
+
+```bash
+# Check installed files
+ls -la /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
+ls -la /usr/local/etc/ha-singleton.conf
+
+# Verify WAN interfaces were configured
+grep "WAN_INTS" /usr/local/etc/ha-singleton.conf
+
+# Test script syntax
+sh -n /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
+
+# Check backup was created
+ls -la /tmp/ha-setup-backup-*
+```
+
+#### Setup Script Output
+
+The installer provides detailed feedback:
+
+```
+================================================
+OPNsense HA Singleton Setup Script v2.1
+================================================
+
+[INFO] Detected OPNsense version: 25.7
+[INFO] WAN Interfaces: vtnet1 vtnet2
+[INFO] Git Branch: main
+[INFO] Cleanup First: false
+
+[INFO] Creating backup in /tmp/ha-setup-backup-20241016-143022
+[INFO] Installing from GitHub repository...
+[SUCCESS] Installed CARP hook script
+[SUCCESS] Installed universal configuration file
+[SUCCESS] Installation validation passed
+
+Next steps:
+1. Review and customize /usr/local/etc/ha-singleton.conf
+2. Configure CARP VIPs in the OPNsense GUI
+3. Set up HA synchronization settings
+4. Test failover functionality
+```
+
+### Manual Installation (Alternative)
 
 ```bash
 # Clone the repository
 git clone https://github.com/ttickell/opnsense-ha.git
 cd opnsense-ha
 
-# Run the installer
+# Run the installer with your WAN interfaces
 ./setup-firewall "vtnet1 vtnet2"
 ```
 
@@ -142,7 +268,61 @@ This HA solution is designed to work with the [opnsense-ipv6](https://github.com
 
 ## Troubleshooting
 
-### Common Issues
+### Setup Script Issues
+
+1. **Installation fails**:
+   ```bash
+   # Check internet connectivity
+   ping -c 3 github.com
+   
+   # Verify OPNsense detection
+   cat /usr/local/opnsense/version/opnsense
+   
+   # Try with cleanup flag
+   ./setup-firewall --cleanup "vtnet1 vtnet2"
+   ```
+
+2. **Git clone failures**:
+   ```bash
+   # Install git manually
+   pkg install -y git
+   
+   # Try specific branch
+   ./setup-firewall "vtnet1 vtnet2" main
+   
+   # Check available branches
+   git ls-remote --heads https://github.com/ttickell/opnsense-ha.git
+   ```
+
+3. **Permission errors**:
+   ```bash
+   # Ensure running as root
+   whoami
+   
+   # Fix permissions manually if needed
+   chmod 755 /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
+   ```
+
+4. **Configuration not applied**:
+   ```bash
+   # Check if interfaces were substituted correctly
+   grep "WAN_INTS" /usr/local/etc/ha-singleton.conf
+   
+   # Manually edit if needed
+   vi /usr/local/etc/ha-singleton.conf
+   ```
+
+5. **Rollback installation**:
+   ```bash
+   # Find your backup
+   ls -la /tmp/ha-setup-backup-*
+   
+   # Restore from backup
+   BACKUP_DIR="/tmp/ha-setup-backup-YYYYMMDD-HHMMSS"
+   cp -r ${BACKUP_DIR}/usr/local/etc/* /usr/local/etc/
+   ```
+
+### Runtime Issues
 
 1. **Script not executing**:
    ```bash
