@@ -88,9 +88,21 @@ debug_log() {
     fi
 }
 
+# System tunable initialization
+init_system_tunables() {
+    # Disable PFSYNC CARP demotion to prevent flapping during primary failures
+    local current_factor=$(sysctl -n net.pfsync.carp_demotion_factor 2>/dev/null || echo "240")
+    if [ "${current_factor}" != "0" ]; then
+        logger -p info -t ${TAG} "Setting PFSYNC CARP demotion factor to 0 (was ${current_factor})"
+        sysctl net.pfsync.carp_demotion_factor=0 >/dev/null 2>&1 || \
+            logger -p warning -t ${TAG} "Failed to set PFSYNC demotion factor"
+    fi
+}
+
 # Initialize
 acquire_lock
 validate_environment
+init_system_tunables
 
 logger -p info -t ${TAG} "Processing CARP event: ${INTERFACE} -> ${CARP_STATUS}"
 debug_log "Configuration: WAN_INTS=${WAN_INTS}, IPv6=${ENABLE_IPV6}, Services=${ENABLE_SERVICE_MANAGEMENT}"
@@ -162,7 +174,14 @@ start_service() {
             # Use direct daemon commands for IPv6 services
             case "${service}" in
                 rtsold)
-                    /usr/sbin/rtsold -aiu -p /var/run/rtsold.pid -A /var/etc/rtsold_script.sh -R /usr/local/opnsense/scripts/interfaces/rtsold_resolvconf.sh
+                    # Use conditional rtsold scripts based on CARP state
+                    if [ "${CARP_STATUS}" = "MASTER" ]; then
+                        # Full rtsold with scripts for proper IPv6 operation
+                        /usr/sbin/rtsold -aiu -p /var/run/rtsold.pid -A /var/etc/rtsold_script.sh -R /usr/local/opnsense/scripts/interfaces/rtsold_resolvconf.sh
+                    else
+                        # Minimal rtsold for BACKUP state to avoid interface conflicts
+                        /usr/sbin/rtsold -aiu -p /var/run/rtsold.pid
+                    fi
                     ;;
                 radvd)
                     /usr/local/sbin/radvd -p /var/run/radvd.pid -C /var/etc/radvd.conf -m syslog

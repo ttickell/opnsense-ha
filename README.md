@@ -10,7 +10,8 @@ This project provides automated failover management for OPNsense firewalls with 
 
 ### ✅ Core HA Functionality
 - **CARP-based failover**: Automatic interface management based on CARP master/backup status
-- **Service management**: Intelligent start/stop of IPv6 services (`rtsold`, `dhcp6c`, `radvd`)
+- **CARP stability fixes**: Prevents flapping during primary failures with PFSYNC tuning and conditional IPv6 services
+- **Service management**: Intelligent start/stop of IPv6 services (`rtsold`, `dhcp6c`, `radvd`) with state-aware configuration
 - **Route management**: Backup routing through alternate gateways
 - **Health monitoring**: CARP service status integration with connectivity checks
 
@@ -333,16 +334,31 @@ This HA solution is designed to work with the [opnsense-ipv6](https://github.com
    tail -f /var/log/system.log | grep carp
    ```
 
-2. **Services not starting/stopping**:
+2. **CARP flapping issues**:
+   ```bash
+   # Check PFSYNC demotion factor (should be 0)
+   sysctl net.pfsync.carp_demotion_factor
+   
+   # Monitor CARP state transitions
+   tail -f /var/log/system.log | grep -E "(carp|CARP)"
+   
+   # Check for interface reload events
+   tail -f /var/log/system.log | grep -E "(rtsold|interface.*up)"
+   ```
+
+3. **Services not starting/stopping**:
    ```bash
    # Enable debug mode
    echo 'DEBUG="yes"' >> /usr/local/etc/ha-singleton.conf
    
    # Check service status
    service rtsold status
+   
+   # Verify conditional rtsold configuration
+   ps aux | grep rtsold
    ```
 
-3. **Route management issues**:
+4. **Route management issues**:
    ```bash
    # Check current routes
    netstat -rn | grep default
@@ -375,7 +391,15 @@ The solution follows OPNsense development best practices:
 
 ## Version History
 
-### v2.0 (Current)
+### v2.1 (Current)
+- **CARP flapping fixes**: Resolves CARP instability during primary failures
+  - Disables PFSYNC CARP demotion factor to prevent automatic demotion during bulk sync failures
+  - Implements conditional rtsold configuration to prevent interface reloads that reset CARP state
+  - Maintains IPv6 functionality while ensuring stable failover behavior
+- Enhanced logging for troubleshooting CARP state transitions
+- Improved routing stability during failover scenarios
+
+### v2.0 (Previous)
 - Complete rewrite with improved error handling
 - Configuration file support
 - IPv6 integration hooks

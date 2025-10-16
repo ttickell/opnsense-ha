@@ -1,8 +1,8 @@
 #!/bin/sh
 
 # OPNsense HA Singleton Setup Script
-# Comprehensive installer for HA customizations
-# Version: 2.1 - Universal HA Logic (works for any number of WAN interfaces)
+# Comprehensive installer for HA customizations with CARP flapping fixes
+# Version: 2.1 - Universal HA Logic with CARP stability enhancements
 
 set -e  # Exit on any error
 
