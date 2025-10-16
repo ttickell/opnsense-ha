@@ -175,6 +175,11 @@
 - [ ] Standardize error handling across all components
 - [ ] Implement consistent logging format
 - [ ] Add proper input validation throughout
+- [ ] **Patch configctl to support IPv6 services (rtsold, dhcp6c, radvd)**
+  - [ ] Create action definition files for IPv6 services
+  - [ ] Add configctl templates for proper service integration
+  - [ ] Test configctl commands work correctly
+  - [ ] Ensure patches survive OPNsense updates or implement as overlay
 
 ### Future Enhancements
 - [ ] Support for more than 2 HA nodes (cluster mode)
