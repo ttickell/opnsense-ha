@@ -2,11 +2,12 @@
 
 # OPNsense HA Singleton CARP Hook Script
 # Manages interface states, services, and routing based on CARP status
-# Version: 2.2 - Enhanced with OPNsense best practices
+# Version: 2.3 - Enhanced IPv6 service management with restart logic for CARP failover
 #
 # Implementation Notes:
 # - Uses configctl interface linkup.start/stop (validated against OPNsense source)
-# - Direct service management for IPv6 services (matches OPNsense patterns)
+# - Enhanced IPv6 service restart during CARP state transitions
+# - Fixes dhcp6c "Can't assign requested address" issues during failover
 # - Compatible with interface_suspend() patterns used in OPNsense 20-ppp hook
 # - Supports service status integration via configctl interface update carp service_status
 
@@ -187,7 +188,18 @@ start_service() {
                     /usr/local/sbin/radvd -p /var/run/radvd.pid -C /var/etc/radvd.conf -m syslog
                     ;;
                 dhcp6c)
-                    /usr/local/sbin/dhcp6c -c /var/etc/dhcp6c.conf -p /var/run/dhcp6c.pid
+                    # Enhanced dhcp6c startup with interface validation
+                    local dhcp6c_config="/var/etc/dhcp6c.conf"
+                    if [ -f "${dhcp6c_config}" ]; then
+                        # Kill any existing dhcp6c processes that might be stuck
+                        pkill -f dhcp6c 2>/dev/null || true
+                        sleep 1
+                        # Start dhcp6c with fresh configuration
+                        /usr/local/sbin/dhcp6c -c "${dhcp6c_config}" -p /var/run/dhcp6c.pid
+                        debug_log "Started dhcp6c with config: ${dhcp6c_config}"
+                    else
+                        logger -p warning -t ${TAG} "dhcp6c config file not found: ${dhcp6c_config}"
+                    fi
                     ;;
             esac
             ;;
@@ -220,6 +232,29 @@ stop_service() {
     esac
 }
 
+restart_service() {
+    local service=$1
+    logger -p info -t ${TAG} "Restarting service: ${service}"
+    
+    # For IPv6 services, we need to restart them to rebind to correct interfaces
+    case "${service}" in
+        rtsold|dhcp6c|radvd)
+            # Stop the service first
+            service "${service}" onestop 2>/dev/null || true
+            # Wait a moment for cleanup
+            sleep 1
+            # Start with fresh interface bindings
+            start_service "${service}"
+            ;;
+        *)
+            # Try configctl restart or fall back to service restart
+            if ! configctl "${service}" restart 2>/dev/null; then
+                service "${service}" onerestart 2>/dev/null || service "${service}" restart
+            fi
+            ;;
+    esac
+}
+
 manage_services() {
     if [ "${ENABLE_SERVICE_MANAGEMENT}" != "yes" ]; then
         debug_log "Service management disabled, skipping"
@@ -242,7 +277,17 @@ manage_services() {
                 if [ "${service_running}" = "false" ]; then
                     start_service "${service}"
                 else
-                    debug_log "Service ${service} already running"
+                    # Critical fix: Restart IPv6 services when becoming MASTER
+                    # This ensures they rebind to the correct interfaces
+                    case "${service}" in
+                        rtsold|dhcp6c|radvd)
+                            logger -p info -t ${TAG} "Restarting ${service} for interface rebinding"
+                            restart_service "${service}"
+                            ;;
+                        *)
+                            debug_log "Service ${service} already running"
+                            ;;
+                    esac
                 fi
                 ;;
             "BACKUP")
@@ -376,8 +421,15 @@ main() {
         logger -p error -t ${TAG} "Health checks failed, continuing with limited functionality"
     fi
     
-    # Execute management functions
+    # Execute management functions in correct order
     manage_wan_interfaces
+    
+    # Wait for interface changes to settle before managing services
+    if [ "${CARP_STATUS}" = "MASTER" ]; then
+        debug_log "Waiting ${INTERFACE_SETTLE_TIME} seconds for interface changes to settle"
+        sleep "${INTERFACE_SETTLE_TIME}"
+    fi
+    
     manage_services
     manage_routes
     trigger_ipv6_updates
