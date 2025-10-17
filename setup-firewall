@@ -2,17 +2,12 @@
 
 # OPNsense HA Singleton Setup Script
 # Comprehensive installer for HA customizations with CARP flapping fixes
-# Version: 2.6 - Enhanced interface detection and DHCP lease renewal
+# Version: 2.7 - Added DHCPv6 DUID override system for HA consistency
 
 set -e  # Exit on any error
 
 # Configuration variables
-SCRIPT_NAME    files_to_remove="
-        /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
-        /usr/local/etc/ha-singleton.conf
-        /usr/local/bin/ha-ipv6-integration.sh
-        /usr/local/bin/debug_log
-    "ename "$0")"
+SCRIPT_NAME="$(basename "$0")"
 SCRIPT_VERSION="2.7"
 GITHUB_REPO="https://github.com/ttickell/opnsense-ha.git"
 WORKDIR="/tmp/opnsense-ha-setup"
@@ -262,6 +257,7 @@ cleanup_existing() {
     
     local files_to_remove="
         /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
+        /usr/local/etc/rc.syshook.d/start/25-duid-override
         /usr/local/etc/ha-singleton.conf
         /usr/local/bin/ha-ipv6-integration.sh
         /usr/local/bin/debug_log
@@ -472,6 +468,14 @@ install_files_from_directory() {
         log_success "Installed debug logging utility"
     fi
     
+    # Install DUID override hook for DHCPv6 HA support
+    if [ -f "${source_dir}/usr/local/etc/rc.syshook.d/start/25-duid-override" ]; then
+        mkdir -p /usr/local/etc/rc.syshook.d/start
+        cp "${source_dir}/usr/local/etc/rc.syshook.d/start/25-duid-override" /usr/local/etc/rc.syshook.d/start/
+        chmod 755 /usr/local/etc/rc.syshook.d/start/25-duid-override
+        log_success "Installed DHCPv6 DUID override hook"
+    fi
+    
     # Create the CARP service status directory (for future use)
     mkdir -p /usr/local/etc/rc.carp_service_status.d
 }
@@ -484,6 +488,79 @@ install_embedded() {
     # For now, we'll create basic versions
     
     error_exit "Embedded installation not implemented. Please ensure internet connectivity for GitHub installation."
+}
+
+# Function to validate DUID configuration for HA setups
+validate_ha_duid_configuration() {
+    log_info "Validating DHCPv6 DUID configuration for HA..."
+    
+    # Check if this appears to be an HA environment
+    local ha_detected=false
+    
+    # Look for existing CARP configuration
+    if ifconfig 2>/dev/null | grep -q "carp:" || \
+       [ -f "/usr/local/etc/rc.syshook.d/carp/00-ha-singleton" ] || \
+       [ -f "/usr/local/etc/ha-singleton.conf" ]; then
+        ha_detected=true
+        log_info "HA environment detected"
+    fi
+    
+    # If HA is detected, check for DUID override file
+    if [ "${ha_detected}" = "true" ]; then
+        if [ ! -f "/conf/dhcp6c_duid.override" ]; then
+            echo
+            log_error "HA environment detected but DHCPv6 DUID override file is missing!"
+            echo
+            log_info "For HA clusters with IPv6, DUID synchronization is MANDATORY."
+            log_info "The DUID override file ensures both firewalls appear as the same"
+            log_info "DHCPv6 client to ISP servers, preventing prefix delegation issues."
+            echo
+            log_warning "Required: /conf/dhcp6c_duid.override"
+            echo
+            log_info "To resolve this issue:"
+            echo "  1. On PRIMARY firewall: Enable DHCPv6 client and obtain lease"
+            echo "  2. On PRIMARY firewall: cp /var/db/dhcp6c_duid /conf/dhcp6c_duid.override"
+            echo "  3. On SECONDARY firewall: scp primary:/conf/dhcp6c_duid.override /conf/"
+            echo "  4. Reboot both firewalls to apply DUID override"
+            echo
+            return 1
+        else
+            # Validate DUID override file format
+            if [ ! -r "/conf/dhcp6c_duid.override" ] || [ ! -s "/conf/dhcp6c_duid.override" ]; then
+                log_error "DUID override file exists but is not readable or empty"
+                return 1
+            fi
+            
+            local duid_size=$(stat -f%z "/conf/dhcp6c_duid.override" 2>/dev/null)
+            if [ -z "${duid_size}" ] || [ "${duid_size}" -lt 8 ] || [ "${duid_size}" -gt 50 ]; then
+                log_error "DUID override file has suspicious size (${duid_size} bytes)"
+                log_info "DUID files should typically be 10-20 bytes"
+                return 1
+            fi
+            
+            log_success "DUID override file found and appears valid (${duid_size} bytes)"
+            
+            # Check if system DUID matches override (if system DUID exists)
+            if [ -f "/var/db/dhcp6c_duid" ]; then
+                if cmp -s "/var/db/dhcp6c_duid" "/conf/dhcp6c_duid.override"; then
+                    log_success "System DUID matches override file"
+                else
+                    log_warning "System DUID differs from override (will be corrected at next boot)"
+                fi
+            else
+                log_info "No system DUID file found (will be created from override at next boot)"
+            fi
+        fi
+    else
+        log_info "Standalone firewall detected - DUID override is optional"
+        if [ -f "/conf/dhcp6c_duid.override" ]; then
+            log_info "DUID override file found (will be applied at boot)"
+        else
+            log_info "No DUID override file found (system will generate DUID as needed)"
+        fi
+    fi
+    
+    return 0
 }
 
 # Function to validate installation
@@ -570,15 +647,50 @@ show_post_install_info() {
     echo "1. Review and customize /usr/local/etc/ha-singleton.conf"
     echo "2. Configure CARP VIPs in the OPNsense GUI"
     echo "3. Set up HA synchronization settings"
-    echo "4. Test failover functionality"
-    echo "5. Verify system tunables: sysctl net.pfsync.carp_demotion_factor"
+    echo "4. ${YELLOW}IMPORTANT: Configure DHCPv6 DUID synchronization (see below)${NC}"
+    echo "5. Test failover functionality"
+    echo "6. Verify system tunables: sysctl net.pfsync.carp_demotion_factor"
     echo
     log_info "Configuration file: /usr/local/etc/ha-singleton.conf"
     log_info "Main script: /usr/local/etc/rc.syshook.d/carp/00-ha-singleton"
+    log_info "DUID override hook: /usr/local/etc/rc.syshook.d/start/25-duid-override"
     log_info "Backup location: ${BACKUP_DIR}"
     log_info "Installed from branch: ${BRANCH_NAME}"
     echo
     log_warning "Remember to configure both primary and secondary firewalls!"
+    echo
+    
+    # DHCPv6 DUID Synchronization Instructions
+    echo "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo "${YELLOW}                          DHCPv6 DUID SYNCHRONIZATION REQUIRED                          ${NC}"
+    echo "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo
+    log_info "For HA clusters with IPv6, both firewalls MUST use the same DHCPv6 DUID:"
+    echo
+    echo "${GREEN}On PRIMARY firewall:${NC}"
+    echo "  1. Enable DHCPv6 client and obtain initial lease"
+    echo "  2. Copy DUID to override file:"
+    echo "     ${BLUE}cp /var/db/dhcp6c_duid /conf/dhcp6c_duid.override${NC}"
+    echo "  3. Verify DUID file was created:"
+    echo "     ${BLUE}ls -la /conf/dhcp6c_duid.override${NC}"
+    echo
+    echo "${GREEN}On SECONDARY firewall:${NC}"
+    echo "  1. Copy DUID from primary firewall:"
+    echo "     ${BLUE}scp primary-firewall:/conf/dhcp6c_duid.override /conf/${NC}"
+    echo "  2. Verify DUID files match:"
+    echo "     ${BLUE}diff /conf/dhcp6c_duid.override primary-firewall:/conf/dhcp6c_duid.override${NC}"
+    echo "     (No output = files match)"
+    echo "  3. Reboot secondary firewall to apply DUID override"
+    echo
+    echo "${GREEN}Verification on BOTH firewalls:${NC}"
+    echo "  • Check DUID override status in system log:"
+    echo "    ${BLUE}grep 'duid-override' /var/log/system/latest.log${NC}"
+    echo "  • Verify active DUID matches override:"
+    echo "    ${BLUE}cmp -s /var/db/dhcp6c_duid /conf/dhcp6c_duid.override && echo 'MATCH' || echo 'DIFFER'${NC}"
+    echo
+    echo "${YELLOW}⚠️  WARNING: Without DUID synchronization, IPv6 prefix delegations may be${NC}"
+    echo "${YELLOW}   inconsistent during failover/failback operations!${NC}"
+    echo "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo
     log_info "To test the configuration manually:"
     echo "  /usr/local/etc/rc.syshook.d/carp/00-ha-singleton 1@vtnet0_vlan115 MASTER"
@@ -658,6 +770,10 @@ run_test_mode() {
         log_info "No existing installation found"
     fi
     
+    # Validate DUID configuration
+    echo
+    validate_ha_duid_configuration || log_warning "DUID validation failed - check configuration"
+    
     log_success "Test mode validation completed"
 }
 
@@ -715,6 +831,14 @@ main() {
     
     # Validate installation
     validate_installation
+    
+    # Validate DUID configuration for HA
+    echo
+    if ! validate_ha_duid_configuration; then
+        log_error "DUID validation failed - HA setup incomplete"
+        log_warning "Installation completed but requires DUID synchronization before production use"
+        exit 1
+    fi
     
     # Show post-installation information
     show_post_install_info

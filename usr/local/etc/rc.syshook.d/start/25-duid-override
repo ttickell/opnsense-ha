@@ -1,0 +1,169 @@
+#!/bin/sh
+
+# OPNsense DHCPv6 DUID Override Hook
+# Provides consistent DUID across HA firewall pairs for proper DHCPv6 operation
+# Version: 1.0 - Initial implementation for HA DUID synchronization
+#
+# This hook runs during system startup (before DHCPv6 services) to:
+# - Check for DUID override file (/conf/dhcp6c_duid.override)
+# - Replace system DUID if override exists
+# - Maintain backup for rollback capability
+# - Log all operations for audit trail
+#
+# Usage Scenarios:
+# - Standalone Firewall: Optional operation (only if override file exists)
+# - HA Cluster: DUID override file should be synchronized between primary/secondary
+#
+# File Locations:
+# - Override Source: /conf/dhcp6c_duid.override (admin-created from primary)
+# - System Target:  /var/db/dhcp6c_duid (active DUID used by dhcp6c)
+# - OPNsense Backup: /conf/dhcp6c_duid (standard OPNsense backup location)
+
+TAG="duid-override"
+DUID_OVERRIDE_FILE="/conf/dhcp6c_duid.override"
+DUID_SYSTEM_FILE="/var/db/dhcp6c_duid"
+DUID_BACKUP_FILE="/conf/dhcp6c_duid"
+DUID_ORIGINAL_BACKUP="/conf/dhcp6c_duid.original"
+
+# Logging function
+log_message() {
+    local level=$1
+    local message=$2
+    logger -p "${level}" -t "${TAG}" "${message}"
+}
+
+# Validate DUID format (basic validation for dhcp6c compatibility)
+validate_duid() {
+    local duid_file=$1
+    
+    if [ ! -f "${duid_file}" ]; then
+        log_message "warning" "DUID file does not exist: ${duid_file}"
+        return 1
+    fi
+    
+    # Check if file is readable and not empty
+    if [ ! -r "${duid_file}" ] || [ ! -s "${duid_file}" ]; then
+        log_message "warning" "DUID file is not readable or empty: ${duid_file}"
+        return 1
+    fi
+    
+    # Basic format check - DUID should be binary data, typically 10-20 bytes
+    local file_size=$(stat -f%z "${duid_file}" 2>/dev/null)
+    if [ -z "${file_size}" ] || [ "${file_size}" -lt 8 ] || [ "${file_size}" -gt 50 ]; then
+        log_message "warning" "DUID file size suspicious (${file_size} bytes): ${duid_file}"
+        return 1
+    fi
+    
+    log_message "debug" "DUID validation passed for ${duid_file} (${file_size} bytes)"
+    return 0
+}
+
+# Create backup of original system DUID (one-time operation)
+backup_original_duid() {
+    if [ -f "${DUID_SYSTEM_FILE}" ] && [ ! -f "${DUID_ORIGINAL_BACKUP}" ]; then
+        if cp "${DUID_SYSTEM_FILE}" "${DUID_ORIGINAL_BACKUP}"; then
+            log_message "info" "Created original DUID backup: ${DUID_ORIGINAL_BACKUP}"
+        else
+            log_message "warning" "Failed to create original DUID backup"
+        fi
+    fi
+}
+
+# Apply DUID override
+apply_duid_override() {
+    log_message "info" "Applying DUID override from ${DUID_OVERRIDE_FILE}"
+    
+    # Validate override file
+    if ! validate_duid "${DUID_OVERRIDE_FILE}"; then
+        log_message "error" "DUID override file validation failed"
+        return 1
+    fi
+    
+    # Create backup of current system DUID
+    backup_original_duid
+    
+    # Create temporary backup of current system DUID
+    if [ -f "${DUID_SYSTEM_FILE}" ]; then
+        if ! cp "${DUID_SYSTEM_FILE}" "${DUID_SYSTEM_FILE}.pre-override"; then
+            log_message "warning" "Failed to create pre-override backup"
+        fi
+    fi
+    
+    # Apply the override
+    if cp "${DUID_OVERRIDE_FILE}" "${DUID_SYSTEM_FILE}"; then
+        # Set proper ownership and permissions
+        chown root:wheel "${DUID_SYSTEM_FILE}" 2>/dev/null
+        chmod 644 "${DUID_SYSTEM_FILE}" 2>/dev/null
+        
+        log_message "info" "Successfully applied DUID override to ${DUID_SYSTEM_FILE}"
+        
+        # Also update the OPNsense backup location for consistency
+        if cp "${DUID_OVERRIDE_FILE}" "${DUID_BACKUP_FILE}"; then
+            log_message "debug" "Updated OPNsense DUID backup: ${DUID_BACKUP_FILE}"
+        else
+            log_message "warning" "Failed to update OPNsense DUID backup"
+        fi
+        
+        return 0
+    else
+        log_message "error" "Failed to apply DUID override"
+        return 1
+    fi
+}
+
+# Check if we're in an HA environment (basic heuristic)
+detect_ha_environment() {
+    # Look for CARP interfaces
+    if ifconfig 2>/dev/null | grep -q "carp:"; then
+        return 0  # HA environment detected
+    fi
+    
+    # Look for HA-related configuration files
+    if [ -f "/usr/local/etc/ha-singleton.conf" ] || [ -f "/usr/local/etc/rc.syshook.d/carp/00-ha-singleton" ]; then
+        return 0  # HA environment detected
+    fi
+    
+    return 1  # Standalone environment
+}
+
+# Main execution
+main() {
+    log_message "info" "DHCPv6 DUID override hook starting"
+    
+    # Check if override file exists
+    if [ ! -f "${DUID_OVERRIDE_FILE}" ]; then
+        if detect_ha_environment; then
+            log_message "warning" "HA environment detected but DUID override file missing: ${DUID_OVERRIDE_FILE}"
+            log_message "info" "For HA deployments, DUID should be synchronized between primary and secondary"
+        else
+            log_message "debug" "No DUID override file found (${DUID_OVERRIDE_FILE}) - standalone operation"
+        fi
+        log_message "info" "DHCPv6 DUID override hook completed (no action taken)"
+        exit 0
+    fi
+    
+    log_message "info" "DUID override file found: ${DUID_OVERRIDE_FILE}"
+    
+    # Check if system DUID file exists and compare
+    if [ -f "${DUID_SYSTEM_FILE}" ]; then
+        if cmp -s "${DUID_OVERRIDE_FILE}" "${DUID_SYSTEM_FILE}"; then
+            log_message "info" "System DUID already matches override file - no action needed"
+            exit 0
+        else
+            log_message "info" "System DUID differs from override - applying override"
+        fi
+    else
+        log_message "info" "No existing system DUID found - applying override"
+    fi
+    
+    # Apply the override
+    if apply_duid_override; then
+        log_message "info" "DHCPv6 DUID override hook completed successfully"
+    else
+        log_message "error" "DHCPv6 DUID override hook failed"
+        exit 1
+    fi
+}
+
+# Execute main function
+main "$@"

@@ -2,7 +2,7 @@
 
 # OPNsense HA Singleton CARP Hook Script
 # Manages interface states, services, and routing based on CARP status
-# Version: 2.6 - Added interface reconfiguration for DHCP lease renewal and route restoration
+# Version: 2.7 - Added route verification and retry logic for failback scenarios
 #
 # Implementation Notes:
 # - Complete configctl interface linkup.start/stop with verification and ifconfig fallback
@@ -12,6 +12,7 @@
 # - Enhanced route management: removes existing default routes before adding backup routes
 # - Fixes "route already in table" errors by properly managing route table
 # - Enhanced IPv6 service restart during CARP state transitions
+# - Added route verification and retry logic to ensure failback routing works
 # - Compatible with interface_suspend() patterns used in OPNsense 20-ppp hook
 
 TAG="syshook-carp-ha-singleton"
@@ -32,6 +33,20 @@ ENABLE_IPV6="yes"
 ENABLE_SERVICE_MANAGEMENT="yes"
 ENABLE_ROUTE_MANAGEMENT="yes"
 ENABLE_INTERFACE_RECONFIGURE="yes"
+
+# Route verification and retry configuration (NEW in v2.7)
+# These settings address ARP resolution issues and timing problems during failback
+ENABLE_ROUTE_VERIFICATION="yes"        # Enable route verification and automatic fixing
+ROUTE_RETRY_COUNT="3"                   # Number of times to retry route operations
+ROUTE_RETRY_DELAY="2"                   # Seconds between route retry attempts
+
+# DHCPv6 DUID override configuration (NEW in v2.7)
+# Essential for consistent DHCPv6 client identification in HA setups
+ENABLE_DHCP6C_DUID_OVERRIDE="yes"       # Enable DUID override functionality
+DHCP6C_DUID_OVERRIDE_FILE="/conf/dhcp6c_duid.override"  # Custom DUID file location
+DHCP6C_DUID_SYSTEM_FILE="/var/db/dhcp6c_duid"           # System DUID file location
+DHCP6C_DUID_BACKUP_FILE="/conf/dhcp6c_duid"             # OPNsense backup DUID location
+
 DEBUG="no"
 
 # Load configuration file if it exists
@@ -358,6 +373,174 @@ manage_services() {
 }
 
 # Route management functions
+verify_default_route() {
+    local expected_gateway=$1
+    local family=$2
+    local max_retries=${3:-${ROUTE_RETRY_COUNT}}
+    local retry_delay=${4:-${ROUTE_RETRY_DELAY}}
+    
+    logger -p info -t ${TAG} "Verifying ${family} default route to ${expected_gateway}"
+    
+    local attempt=1
+    while [ ${attempt} -le ${max_retries} ]; do
+        if check_route_exists "${expected_gateway}" "${family}"; then
+            logger -p info -t ${TAG} "Verified ${family} default route to ${expected_gateway} (attempt ${attempt})"
+            return 0
+        fi
+        
+        logger -p warning -t ${TAG} "Default route verification failed (attempt ${attempt}/${max_retries})"
+        
+        if [ ${attempt} -lt ${max_retries} ]; then
+            # Try to add the route manually
+            logger -p info -t ${TAG} "Attempting to add ${family} default route via ${expected_gateway}"
+            case "${family}" in
+                "ipv4")
+                    route add default "${expected_gateway}" 2>/dev/null || \
+                        logger -p warning -t ${TAG} "Failed to manually add IPv4 route"
+                    ;;
+                "ipv6")
+                    route -6 add default "${expected_gateway}" 2>/dev/null || \
+                        logger -p warning -t ${TAG} "Failed to manually add IPv6 route"
+                    ;;
+            esac
+            
+            logger -p info -t ${TAG} "Waiting ${retry_delay} seconds before retry"
+            sleep ${retry_delay}
+        fi
+        
+        attempt=$((attempt + 1))
+    done
+    
+    logger -p error -t ${TAG} "Failed to verify ${family} default route after ${max_retries} attempts"
+    return 1
+}
+
+force_arp_resolution() {
+    local gateway=$1
+    local interface=$2
+    
+    logger -p info -t ${TAG} "Forcing ARP resolution for gateway ${gateway} via ${interface}"
+    
+    # Send ping to force ARP resolution
+    ping -c 1 -W 2000 -S "${interface}" "${gateway}" >/dev/null 2>&1 || \
+        logger -p warning -t ${TAG} "ARP resolution ping failed for ${gateway}"
+    
+    # Check if ARP entry exists
+    if arp -n "${gateway}" >/dev/null 2>&1; then
+        logger -p info -t ${TAG} "ARP entry confirmed for ${gateway}"
+        return 0
+    else
+        logger -p warning -t ${TAG} "No ARP entry found for ${gateway}"
+        return 1
+    fi
+}
+
+get_interface_gateway() {
+    local interface=$1
+    local family=$2
+    
+    case "${family}" in
+        "ipv4")
+            # Get IPv4 gateway from routing table for this interface
+            netstat -rn -f inet | awk -v iface="${interface}" '$6 == iface && /^default/ {print $2}' | head -1
+            ;;
+        "ipv6")
+            # Get IPv6 gateway from routing table for this interface
+            netstat -rn -f inet6 | awk -v iface="${interface}" '$4 == iface && /^default/ {print $2}' | head -1
+            ;;
+    esac
+}
+
+verify_and_fix_master_routes() {
+    if [ "${ENABLE_ROUTE_VERIFICATION}" != "yes" ]; then
+        debug_log "Route verification disabled, skipping"
+        return
+    fi
+    
+    logger -p info -t ${TAG} "Verifying and fixing MASTER routes after interface reconfiguration"
+    
+    # Wait for interface configuration to settle
+    sleep ${ROUTE_RETRY_DELAY}
+    
+    # Check each WAN interface for proper routing
+    for WAN_INT in ${WAN_INTS}; do
+        if [ "$(get_interface_status "${WAN_INT}")" = "UP" ]; then
+            logger -p info -t ${TAG} "Checking routes for interface ${WAN_INT}"
+            
+            # Get the expected gateway for this interface
+            local ipv4_gw=$(get_interface_gateway "${WAN_INT}" "ipv4")
+            
+            if [ -n "${ipv4_gw}" ]; then
+                logger -p info -t ${TAG} "Expected IPv4 gateway for ${WAN_INT}: ${ipv4_gw}"
+                
+                # Force ARP resolution first
+                force_arp_resolution "${ipv4_gw}" "${WAN_INT}"
+                
+                # Verify the route exists and is working
+                if ! verify_default_route "${ipv4_gw}" "ipv4"; then
+                    logger -p warning -t ${TAG} "IPv4 route verification failed for ${WAN_INT}, triggering interface reset"
+                    
+                    # Try to reset the interface completely
+                    local opnsense_interface=$(get_opnsense_interface_name "${WAN_INT}")
+                    logger -p info -t ${TAG} "Triggering emergency interface reset for ${WAN_INT} (${opnsense_interface})"
+                    
+                    # Force interface down/up cycle
+                    ifconfig "${WAN_INT}" down
+                    sleep 1
+                    ifconfig "${WAN_INT}" up
+                    sleep 2
+                    
+                    # Trigger configctl reconfiguration again
+                    configctl interface reconfigure "${opnsense_interface}" >/dev/null 2>&1 || \
+                        configctl interface newip "${opnsense_interface}" force >/dev/null 2>&1
+                    
+                    # Wait and verify again
+                    sleep ${ROUTE_RETRY_DELAY}
+                    
+                    # Get updated gateway info
+                    ipv4_gw=$(get_interface_gateway "${WAN_INT}" "ipv4")
+                    if [ -n "${ipv4_gw}" ]; then
+                        force_arp_resolution "${ipv4_gw}" "${WAN_INT}"
+                        verify_default_route "${ipv4_gw}" "ipv4" 1 1 || \
+                            logger -p error -t ${TAG} "Emergency route fix failed for ${WAN_INT}"
+                    fi
+                fi
+            else
+                logger -p warning -t ${TAG} "No IPv4 gateway found for ${WAN_INT}"
+            fi
+            
+            # Handle IPv6 if enabled
+            if [ "${ENABLE_IPV6}" = "yes" ]; then
+                local ipv6_gw=$(get_interface_gateway "${WAN_INT}" "ipv6")
+                if [ -n "${ipv6_gw}" ]; then
+                    logger -p info -t ${TAG} "Verifying IPv6 gateway for ${WAN_INT}: ${ipv6_gw}"
+                    verify_default_route "${ipv6_gw}" "ipv6" 2 1 || \
+                        logger -p warning -t ${TAG} "IPv6 route verification failed for ${WAN_INT}"
+                fi
+            fi
+        fi
+    done
+}
+
+check_route_exists() {
+    local gateway=$1
+    local family=$2
+    
+    case "${family}" in
+        "ipv4")
+            # Check if default route exists via this gateway
+            netstat -rn -f inet | grep "^default" | grep -q "${gateway}"
+            return $?
+            ;;
+        "ipv6")
+            # Check if default IPv6 route exists via this gateway
+            netstat -rn -f inet6 | grep "^default" | grep -q "${gateway}"
+            return $?
+            ;;
+    esac
+    return 1
+}
+
 get_default_routes() {
     local family=$1
     case "${family}" in
@@ -452,6 +635,9 @@ manage_routes() {
                 logger -p info -t ${TAG} "Removing IPv6 backup route via ${ALT_DEFROUTE_IPV6}"
                 route -6 delete default "${ALT_DEFROUTE_IPV6}" 2>/dev/null || true
             fi
+            
+            # Verify that proper MASTER routes are established after interface reconfiguration
+            verify_and_fix_master_routes
             ;;
         "BACKUP")
             # For BACKUP state, remove existing default routes and add backup routes
