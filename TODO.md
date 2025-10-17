@@ -209,8 +209,8 @@
 
 ## 📋 Current Priority Order
 
-1. **CRITICAL**: OPNsense Standards Compliance (Phase 0) ⚠️
-2. **IMMEDIATE**: Complete HA failover testing (Phase 1) ⚡
+1. **IMMEDIATE**: Complete HA failover testing (Phase 1) ⚡
+2. **CRITICAL**: OPNsense Standards Compliance (Phase 0) ⚠️
 3. **SHORT-TERM**: Begin IPv6 integration analysis (Phase 2.1) 📋
 4. **MEDIUM-TERM**: Implement unified setup (Phase 4) 🔧
 5. **LONG-TERM**: Production hardening (Phase 5) 🎯
