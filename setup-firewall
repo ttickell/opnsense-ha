@@ -7,8 +7,13 @@
 set -e  # Exit on any error
 
 # Configuration variables
-SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="2.6"
+SCRIPT_NAME    files_to_remove="
+        /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
+        /usr/local/etc/ha-singleton.conf
+        /usr/local/bin/ha-ipv6-integration.sh
+        /usr/local/bin/debug_log
+    "ename "$0")"
+SCRIPT_VERSION="2.7"
 GITHUB_REPO="https://github.com/ttickell/opnsense-ha.git"
 WORKDIR="/tmp/opnsense-ha-setup"
 BACKUP_DIR="/tmp/ha-setup-backup-$(date +%Y%m%d-%H%M%S)"
@@ -318,7 +323,6 @@ create_backup() {
         /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
         /usr/local/etc/ha-singleton.conf
         /usr/local/bin/ha-ipv6-integration.sh
-        /usr/local/etc/rc.carp_service_status.d/wan_connectivity
     "
     
     for file in ${files_to_backup}; do
@@ -468,13 +472,8 @@ install_files_from_directory() {
         log_success "Installed debug logging utility"
     fi
     
-    # Install CARP service status check
-    if [ -f "${source_dir}/usr/local/etc/rc.carp_service_status.d/wan_connectivity" ]; then
-        cp "${source_dir}/usr/local/etc/rc.carp_service_status.d/wan_connectivity" \
-           /usr/local/etc/rc.carp_service_status.d/
-        chmod 755 /usr/local/etc/rc.carp_service_status.d/wan_connectivity
-        log_success "Installed CARP service status check"
-    fi
+    # Create the CARP service status directory (for future use)
+    mkdir -p /usr/local/etc/rc.carp_service_status.d
 }
 
 # Function to install using embedded files (fallback)
