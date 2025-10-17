@@ -2,13 +2,13 @@
 
 # OPNsense HA Singleton Setup Script
 # Comprehensive installer for HA customizations with CARP flapping fixes
-# Version: 2.1 - Universal HA Logic with CARP stability enhancements
+# Version: 2.6 - Enhanced interface detection and DHCP lease renewal
 
 set -e  # Exit on any error
 
 # Configuration variables
 SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="2.1"
+SCRIPT_VERSION="2.6"
 GITHUB_REPO="https://github.com/ttickell/opnsense-ha.git"
 WORKDIR="/tmp/opnsense-ha-setup"
 BACKUP_DIR="/tmp/ha-setup-backup-$(date +%Y%m%d-%H%M%S)"
@@ -52,6 +52,23 @@ cleanup() {
     fi
 }
 
+# Function to read WAN interfaces from existing configuration
+read_existing_config() {
+    local config_file="/usr/local/etc/ha-singleton.conf"
+    
+    if [ -f "${config_file}" ]; then
+        # Try to extract WAN_INTS from the config file
+        local wan_ints=$(grep "^WAN_INTS=" "${config_file}" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+        if [ -n "${wan_ints}" ]; then
+            echo "${wan_ints}"
+            return 0
+        fi
+    fi
+    
+    # Return empty if no config found or WAN_INTS not found
+    return 1
+}
+
 # Trap to ensure cleanup on exit
 trap cleanup EXIT
 
@@ -66,11 +83,13 @@ usage() {
     echo "  --help, -h           Show this help message"
     echo
     echo "Parameters:"
-    echo "  WAN_INTERFACES    Space-delimited list of WAN interface names (default: vtnet1)"
+    echo "  WAN_INTERFACES    Space-delimited list of WAN interface names"
+    echo "                    (default: reads from existing config or vtnet1)"
     echo "  BRANCH_NAME       Git branch to use for installation (default: main)"
     echo
     echo "Examples:"
-    echo "  $0                           # Use defaults (vtnet1, main branch)"
+    echo "  $0                           # Smart defaults (existing config or vtnet1, main branch)"
+    echo "  $0 --test                    # Test using existing configuration"
     echo "  $0 --cleanup vtnet1          # Clean first, then install single WAN"
     echo "  $0 --fix-flapping            # Fix CARP flapping issues only (no install)"
     echo "  $0 --test                    # Test existing configuration"
@@ -200,7 +219,17 @@ while [ $# -gt 0 ]; do
 done
 
 # Set defaults if not provided
-WAN_INTERFACES="${WAN_INTERFACES:-vtnet1}"
+# First, try to read from existing configuration (smart defaults)
+if [ -z "${WAN_INTERFACES}" ]; then
+    existing_wan_ints=$(read_existing_config)
+    if [ $? -eq 0 ] && [ -n "${existing_wan_ints}" ]; then
+        WAN_INTERFACES="${existing_wan_ints}"
+        log_info "Using WAN interfaces from existing configuration: ${WAN_INTERFACES}"
+    else
+        WAN_INTERFACES="vtnet1"
+        log_info "No existing configuration found, using default: ${WAN_INTERFACES}"
+    fi
+fi
 BRANCH_NAME="${BRANCH_NAME:-main}"
 
 # Function to check if running on OPNsense
