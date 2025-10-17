@@ -12,7 +12,8 @@ This project provides automated failover management for OPNsense firewalls with 
 - **CARP-based failover**: Automatic interface management based on CARP master/backup status
 - **CARP stability fixes**: Prevents flapping during primary failures with PFSYNC tuning and conditional IPv6 services
 - **Service management**: Intelligent start/stop of IPv6 services (`rtsold`, `dhcp6c`, `radvd`) with state-aware configuration
-- **Route management**: Backup routing through alternate gateways
+- **Route management**: Backup routing through alternate gateways with automatic cleanup
+- **DHCP lease renewal**: Automatic DHCP state restoration during failover for complete connectivity
 - **Health monitoring**: CARP service status integration with connectivity checks
 
 ### ✅ Advanced Capabilities
@@ -177,6 +178,44 @@ cd opnsense-ha
 ./setup-firewall "vtnet1 vtnet2"
 ```
 
+## Key Features
+
+### DHCP Lease Renewal & Interface Reconfiguration
+
+**New in v2.6**: The HA solution now includes automatic DHCP lease renewal during failover to ensure complete connectivity restoration.
+
+#### How It Works
+
+When a firewall transitions from BACKUP to MASTER state:
+
+1. **Interface State Management**: WAN interfaces are brought UP with proper state verification
+2. **DHCP State Restoration**: Uses OPNsense's `configctl` system to trigger DHCP renewal:
+   - `configctl interface reconfigure <interface>` - Renews DHCP lease and restores routes
+   - `configctl interface newip <interface>` - Triggers IP address reconfiguration
+3. **Route Table Cleanup**: Removes stale default routes before establishing new ones
+4. **Service Coordination**: Ensures IPv6 services restart with fresh network state
+
+#### Configuration
+
+Enable DHCP lease renewal in your configuration:
+
+```bash
+# Enable interface reconfiguration for DHCP renewal
+ENABLE_INTERFACE_RECONFIGURE="yes"
+
+# Map OPNsense interface names to device names
+WAN_INTERFACE_MAP="wan:vtnet0_vlan110"
+# For multiple WANs:
+# WAN_INTERFACE_MAP="wan:vtnet1 wan2:vtnet2"
+```
+
+#### Benefits
+
+- **Complete Failover**: Both IPv4 and IPv6 connectivity restored automatically
+- **No Manual Intervention**: DHCP leases renewed without user action
+- **Route Synchronization**: Default routes properly established from DHCP server
+- **State Consistency**: Network state matches what DHCP server expects
+
 ## Configuration
 
 ### Main Configuration File: `/usr/local/etc/ha-singleton.conf`
@@ -184,6 +223,9 @@ cd opnsense-ha
 ```bash
 # WAN Interfaces to manage
 WAN_INTS="vtnet1 vtnet2"
+
+# WAN Interface Mapping for OPNsense integration
+WAN_INTERFACE_MAP="wan:vtnet1 wan2:vtnet2"
 
 # Services to manage
 SERVICES="rtsold dhcp6c radvd"
@@ -196,6 +238,7 @@ ALT_DEFROUTE_IPV6="fd03:17ac:e938:10::2"
 ENABLE_IPV6="yes"
 ENABLE_SERVICE_MANAGEMENT="yes"
 ENABLE_ROUTE_MANAGEMENT="yes"
+ENABLE_INTERFACE_RECONFIGURE="yes"  # Enable DHCP lease renewal
 DEBUG="no"
 ```
 
@@ -367,6 +410,22 @@ This HA solution is designed to work with the [opnsense-ipv6](https://github.com
    ping -I vtnet1 8.8.8.8
    ```
 
+5. **DHCP lease renewal issues**:
+   ```bash
+   # Check if interface reconfiguration is enabled
+   grep ENABLE_INTERFACE_RECONFIGURE /usr/local/etc/ha-singleton.conf
+   
+   # Verify interface mapping configuration
+   grep WAN_INTERFACE_MAP /usr/local/etc/ha-singleton.conf
+   
+   # Test configctl commands manually
+   configctl interface reconfigure wan
+   configctl interface newip wan
+   
+   # Check DHCP lease status
+   dhclient -T vtnet0_vlan110  # Replace with your interface
+   ```
+
 ### Log Locations
 
 - **System logs**: `/var/log/system.log`
@@ -391,7 +450,17 @@ The solution follows OPNsense development best practices:
 
 ## Version History
 
-### v2.1 (Current)
+### v2.6 (Current)
+- **DHCP Lease Renewal**: Complete failover solution with automatic DHCP state restoration
+  - Implements `configctl interface reconfigure/newip` for DHCP lease renewal
+  - Adds `WAN_INTERFACE_MAP` configuration for OPNsense interface mapping
+  - Ensures both IPv4 and IPv6 connectivity restored during failover
+  - Resolves "route already in table" errors with enhanced route management
+- **Enhanced Interface Management**: Robust interface UP/DOWN logic with configctl integration
+- **Improved Route Handling**: Removes existing default routes before adding backup routes
+- **Configuration Validation**: Better error handling and fallback mechanisms
+
+### v2.1 (Previous)
 - **CARP flapping fixes**: Resolves CARP instability during primary failures
   - Disables PFSYNC CARP demotion factor to prevent automatic demotion during bulk sync failures
   - Implements conditional rtsold configuration to prevent interface reloads that reset CARP state
