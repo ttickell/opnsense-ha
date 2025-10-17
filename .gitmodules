@@ -4,3 +4,6 @@
 [submodule "opnsense-docs"]
 	path = opnsense-docs
 	url = https://github.com/opnsense/docs.git
+[submodule "opnsense-ipv6"]
+	path = opnsense-ipv6
+	url = https://github.com/ttickell/opnsense-ipv6.git
