@@ -61,6 +61,7 @@ usage() {
     echo
     echo "Options:"
     echo "  --cleanup, -c         Clean existing HA installation before installing"
+    echo "  --fix-flapping, -f    Fix CARP flapping by disabling conflicting scripts (no install)"
     echo "  --help, -h           Show this help message"
     echo
     echo "Parameters:"
@@ -70,6 +71,7 @@ usage() {
     echo "Examples:"
     echo "  $0                           # Use defaults (vtnet1, main branch)"
     echo "  $0 --cleanup vtnet1          # Clean first, then install single WAN"
+    echo "  $0 --fix-flapping            # Fix CARP flapping issues only (no install)"
     echo "  $0 vtnet1                    # Single WAN interface, main branch"
     echo "  $0 \"vtnet1 vtnet2\"           # Multiple WAN interfaces, main branch"
     echo "  $0 vtnet1 ghcwork            # Single WAN interface, ghcwork branch"
@@ -81,6 +83,7 @@ usage() {
 
 # Parse command line arguments
 CLEANUP_FIRST=false
+FIX_FLAPPING_ONLY=false
 WAN_INTERFACES=""
 BRANCH_NAME=""
 
@@ -89,6 +92,10 @@ while [ $# -gt 0 ]; do
     case $1 in
         --cleanup|-c)
             CLEANUP_FIRST=true
+            shift
+            ;;
+        --fix-flapping|-f)
+            FIX_FLAPPING_ONLY=true
             shift
             ;;
         --help|-h)
@@ -118,6 +125,14 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# If fixing flapping only, do that and exit
+if [ "$FIX_FLAPPING_ONLY" = "true" ]; then
+    log_info "Fixing CARP flapping issues..."
+    fix_carp_flapping
+    log_info "CARP flapping fix completed. Please reboot the system."
+    exit 0
+fi
 
 # Handle remaining positional arguments after --
 while [ $# -gt 0 ]; do
@@ -174,13 +189,88 @@ cleanup_existing() {
         fi
     done
     
+    # Clean up conflicting old HA scripts that cause CARP flapping
+    log_info "Disabling conflicting legacy HA scripts..."
+    
+    # Disable old 00-ha-update script if it exists
+    if [ -f "/usr/local/etc/rc.syshook.d/carp/00-ha-update" ]; then
+        mv "/usr/local/etc/rc.syshook.d/carp/00-ha-update" \
+           "/usr/local/etc/rc.syshook.d/carp/00-ha-update.disabled" 2>/dev/null || true
+        chmod -x "/usr/local/etc/rc.syshook.d/carp/00-ha-update.disabled" 2>/dev/null || true
+        log_info "Disabled conflicting script: 00-ha-update"
+    fi
+    
+    # Disable old 99-ha-start script if it exists  
+    if [ -f "/usr/local/etc/rc.syshook.d/start/99-ha-start" ]; then
+        mv "/usr/local/etc/rc.syshook.d/start/99-ha-start" \
+           "/usr/local/etc/rc.syshook.d/start/99-ha-start.disabled" 2>/dev/null || true
+        chmod -x "/usr/local/etc/rc.syshook.d/start/99-ha-start.disabled" 2>/dev/null || true
+        log_info "Disabled conflicting script: 99-ha-start"
+    fi
+    
+    # Also disable any already disabled versions to ensure they can't be executed
+    for disabled_script in \
+        "/usr/local/etc/rc.syshook.d/carp/00-ha-update.disabled" \
+        "/usr/local/etc/rc.syshook.d/start/99-ha-start.disabled"; do
+        if [ -f "${disabled_script}" ]; then
+            chmod -x "${disabled_script}" 2>/dev/null || true
+        fi
+    done
+    
     # Remove lock files
     rm -f /var/run/syshook-carp-ha-singleton.lock 2>/dev/null || true
+    rm -f /tmp/home-ha.lck 2>/dev/null || true
+    rm -f /tmp/home-ha.* 2>/dev/null || true
     
     # Clean temporary directories  
     rm -rf /tmp/opnsense-ha-setup* 2>/dev/null || true
     
     log_success "Cleanup completed"
+}
+
+# Function to fix CARP flapping issues by disabling conflicting scripts
+fix_carp_flapping() {
+    log_info "Fixing CARP flapping issues by disabling conflicting legacy scripts..."
+    
+    local fixed_count=0
+    
+    # Disable old 00-ha-update script if it exists
+    if [ -f "/usr/local/etc/rc.syshook.d/carp/00-ha-update" ]; then
+        mv "/usr/local/etc/rc.syshook.d/carp/00-ha-update" \
+           "/usr/local/etc/rc.syshook.d/carp/00-ha-update.disabled" 2>/dev/null || true
+        chmod -x "/usr/local/etc/rc.syshook.d/carp/00-ha-update.disabled" 2>/dev/null || true
+        log_success "Disabled conflicting script: 00-ha-update"
+        fixed_count=$((fixed_count + 1))
+    fi
+    
+    # Disable old 99-ha-start script if it exists  
+    if [ -f "/usr/local/etc/rc.syshook.d/start/99-ha-start" ]; then
+        mv "/usr/local/etc/rc.syshook.d/start/99-ha-start" \
+           "/usr/local/etc/rc.syshook.d/start/99-ha-start.disabled" 2>/dev/null || true
+        chmod -x "/usr/local/etc/rc.syshook.d/start/99-ha-start.disabled" 2>/dev/null || true
+        log_success "Disabled conflicting script: 99-ha-start"
+        fixed_count=$((fixed_count + 1))
+    fi
+    
+    # Ensure already disabled scripts can't be executed
+    for disabled_script in \
+        "/usr/local/etc/rc.syshook.d/carp/00-ha-update.disabled" \
+        "/usr/local/etc/rc.syshook.d/start/99-ha-start.disabled"; do
+        if [ -f "${disabled_script}" ]; then
+            chmod -x "${disabled_script}" 2>/dev/null || true
+        fi
+    done
+    
+    # Clean up any legacy lock files and state files
+    rm -f /tmp/home-ha.lck 2>/dev/null || true
+    rm -f /tmp/home-ha.* 2>/dev/null || true
+    
+    if [ ${fixed_count} -gt 0 ]; then
+        log_success "Fixed ${fixed_count} conflicting script(s). CARP flapping should be resolved."
+        log_info "You may want to reboot the system to ensure all changes take effect."
+    else
+        log_info "No conflicting scripts found. CARP flapping fix not needed."
+    fi
 }
 create_backup() {
     log_info "Creating backup in ${BACKUP_DIR}"
