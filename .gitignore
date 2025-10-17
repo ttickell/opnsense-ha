@@ -205,3 +205,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Production configuration files
+# Contains real firewall configuration details that should not be committed
+real/
