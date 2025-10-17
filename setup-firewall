@@ -62,6 +62,7 @@ usage() {
     echo "Options:"
     echo "  --cleanup, -c         Clean existing HA installation before installing"
     echo "  --fix-flapping, -f    Fix CARP flapping by disabling conflicting scripts (no install)"
+    echo "  --test, -t           Test existing configuration (no install)"
     echo "  --help, -h           Show this help message"
     echo
     echo "Parameters:"
@@ -72,6 +73,7 @@ usage() {
     echo "  $0                           # Use defaults (vtnet1, main branch)"
     echo "  $0 --cleanup vtnet1          # Clean first, then install single WAN"
     echo "  $0 --fix-flapping            # Fix CARP flapping issues only (no install)"
+    echo "  $0 --test                    # Test existing configuration"
     echo "  $0 vtnet1                    # Single WAN interface, main branch"
     echo "  $0 \"vtnet1 vtnet2\"           # Multiple WAN interfaces, main branch"
     echo "  $0 vtnet1 ghcwork            # Single WAN interface, ghcwork branch"
@@ -129,6 +131,7 @@ fix_carp_flapping() {
 # Parse command line arguments
 CLEANUP_FIRST=false
 FIX_FLAPPING_ONLY=false
+TEST_CONFIG_ONLY=false
 WAN_INTERFACES=""
 BRANCH_NAME=""
 
@@ -141,6 +144,10 @@ while [ $# -gt 0 ]; do
             ;;
         --fix-flapping|-f)
             FIX_FLAPPING_ONLY=true
+            shift
+            ;;
+        --test|-t)
+            TEST_MODE=true
             shift
             ;;
         --help|-h)
@@ -309,6 +316,43 @@ validate_branch() {
     fi
 }
 
+# Function to validate WAN interfaces exist on the system
+validate_wan_interfaces() {
+    local interfaces="$1"
+    local valid=true
+    local available_interfaces
+    
+    log_info "Validating WAN interfaces: ${interfaces}"
+    
+    # Get list of available network interfaces
+    available_interfaces=$(ifconfig -l 2>/dev/null || echo "")
+    
+    if [ -z "${available_interfaces}" ]; then
+        log_warning "Could not retrieve network interface list, skipping validation"
+        return 0
+    fi
+    
+    # Check each specified interface
+    for interface in ${interfaces}; do
+        if echo "${available_interfaces}" | grep -q "\b${interface}\b"; then
+            log_success "Interface ${interface}: Found"
+        else
+            log_error "Interface ${interface}: NOT FOUND"
+            log_error "Available interfaces: ${available_interfaces}"
+            valid=false
+        fi
+    done
+    
+    if [ "${valid}" = "false" ]; then
+        log_error "One or more WAN interfaces do not exist on this system"
+        log_info "Use 'ifconfig -l' to see available interfaces"
+        return 1
+    fi
+    
+    log_success "All WAN interfaces validated successfully"
+    return 0
+}
+
 # Function to install git if needed
 ensure_git() {
     if ! command -v git >/dev/null 2>&1; then
@@ -433,6 +477,60 @@ validate_installation() {
         fi
     done
     
+    # Validate configuration file content
+    if [ -f "/usr/local/etc/ha-singleton.conf" ]; then
+        log_info "Validating configuration file content..."
+        
+        # Check that WAN interfaces were properly substituted
+        local configured_interfaces
+        configured_interfaces=$(grep '^WAN_INTS=' /usr/local/etc/ha-singleton.conf 2>/dev/null | cut -d'"' -f2)
+        
+        if [ -n "${configured_interfaces}" ]; then
+            if [ "${configured_interfaces}" = "vtnet1 vtnet2" ]; then
+                log_warning "Configuration still has default interfaces (vtnet1 vtnet2)"
+                log_warning "Expected: ${WAN_INTERFACES}"
+            elif [ "${configured_interfaces}" = "${WAN_INTERFACES}" ]; then
+                log_success "WAN interfaces correctly configured: ${configured_interfaces}"
+            else
+                log_warning "WAN interfaces in config (${configured_interfaces}) differ from expected (${WAN_INTERFACES})"
+            fi
+        else
+            log_warning "Could not read WAN_INTS from configuration file"
+        fi
+        
+        # Validate that PFSYNC demotion factor will be set correctly
+        if grep -q 'init_system_tunables' /usr/local/etc/rc.syshook.d/carp/00-ha-singleton 2>/dev/null; then
+            log_success "System tunables initialization found in script"
+        else
+            log_warning "System tunables initialization not found in script"
+        fi
+        
+        # Check if the configured interfaces actually have CARP configured
+        if [ -n "${configured_interfaces}" ] && command -v ifconfig >/dev/null 2>&1; then
+            log_info "Checking for CARP configuration on interfaces..."
+            local carp_found=false
+            for interface in ${configured_interfaces}; do
+                if ifconfig "${interface}" 2>/dev/null | grep -q "carp"; then
+                    log_success "CARP configuration found on ${interface}"
+                    carp_found=true
+                elif ifconfig 2>/dev/null | grep -E "^${interface}_vlan[0-9]+" | head -1 | while read -r vlan_line; do
+                    local vlan_interface=$(echo "${vlan_line}" | cut -d: -f1)
+                    if ifconfig "${vlan_interface}" 2>/dev/null | grep -q "carp"; then
+                        log_success "CARP configuration found on VLAN interface: ${vlan_interface}"
+                        exit 0
+                    fi
+                done; then
+                    carp_found=true
+                fi
+            done
+            
+            if [ "${carp_found}" = "false" ]; then
+                log_warning "No CARP configuration found on specified WAN interfaces"
+                log_info "Make sure to configure CARP VIPs in the OPNsense GUI"
+            fi
+        fi
+    fi
+    
     log_success "Installation validation passed"
 }
 
@@ -445,6 +543,7 @@ show_post_install_info() {
     echo "2. Configure CARP VIPs in the OPNsense GUI"
     echo "3. Set up HA synchronization settings"
     echo "4. Test failover functionality"
+    echo "5. Verify system tunables: sysctl net.pfsync.carp_demotion_factor"
     echo
     log_info "Configuration file: /usr/local/etc/ha-singleton.conf"
     log_info "Main script: /usr/local/etc/rc.syshook.d/carp/00-ha-singleton"
@@ -452,6 +551,86 @@ show_post_install_info() {
     log_info "Installed from branch: ${BRANCH_NAME}"
     echo
     log_warning "Remember to configure both primary and secondary firewalls!"
+    echo
+    log_info "To test the configuration manually:"
+    echo "  /usr/local/etc/rc.syshook.d/carp/00-ha-singleton 1@vtnet0_vlan115 MASTER"
+    echo "  Check logs: tail -f /var/log/system/latest.log | grep syshook-carp-ha-singleton"
+}
+
+# Test mode function - validate system without installing
+run_test_mode() {
+    log_info "Running in test mode - performing system validation..."
+    echo
+    
+    # Validate environment
+    check_opnsense
+    echo
+    
+    # Validate WAN interfaces
+    log_info "Validating WAN interfaces: ${WAN_INTERFACES}"
+    if validate_wan_interfaces "${WAN_INTERFACES}"; then
+        log_success "WAN interfaces validation passed"
+    else
+        log_error "WAN interfaces validation failed"
+        
+        # Suggest alternative interfaces if available
+        log_info "Available network interfaces on this system:"
+        if command -v ifconfig >/dev/null 2>&1; then
+            ifconfig -l | tr ' ' '\n' | grep -E "^(vtnet|em|igb|ix)" | head -10 | while read -r iface; do
+                echo "  ${iface}"
+            done
+        fi
+    fi
+    echo
+    
+    # Check if installation exists and validate it
+    if [ -f "/usr/local/etc/rc.syshook.d/carp/00-ha-singleton" ]; then
+        log_info "Existing installation found - validating..."
+        validate_installation
+        echo
+        
+        # Check CARP status
+        log_info "Checking CARP status..."
+        if command -v ifconfig >/dev/null 2>&1; then
+            ifconfig | grep -E "(carp|vhid)" || log_info "No CARP interfaces found"
+        fi
+        echo
+        
+        # Check system tunables
+        log_info "Checking system tunables..."
+        if command -v sysctl >/dev/null 2>&1; then
+            local carp_demotion=$(sysctl -n net.inet.carp.demotion 2>/dev/null || echo 'not set')
+            local pfsync_demotion=$(sysctl -n net.pfsync.carp_demotion_factor 2>/dev/null || echo 'not set')
+            
+            echo "net.inet.carp.demotion: ${carp_demotion}"
+            echo "net.pfsync.carp_demotion_factor: ${pfsync_demotion}"
+            
+            # Check for known problematic values
+            if [ "${pfsync_demotion}" != "0" ] && [ "${pfsync_demotion}" != "not set" ]; then
+                log_warning "PFSYNC demotion factor is ${pfsync_demotion} (should be 0 to prevent flapping)"
+                log_info "Run with --fix-flapping to correct this issue"
+            else
+                log_success "PFSYNC demotion factor is optimal (${pfsync_demotion})"
+            fi
+            
+            if [ "${carp_demotion}" != "0" ] && [ "${carp_demotion}" != "not set" ]; then
+                log_warning "CARP demotion level is elevated: ${carp_demotion}"
+            else
+                log_success "CARP demotion level is optimal (${carp_demotion})"
+            fi
+        fi
+        echo
+        
+        # Show recent log entries
+        log_info "Recent HA singleton log entries:"
+        if [ -f "/var/log/system/latest.log" ]; then
+            tail -20 /var/log/system/latest.log | grep "syshook-carp-ha-singleton" | tail -5 || log_info "No recent log entries found"
+        fi
+    else
+        log_info "No existing installation found"
+    fi
+    
+    log_success "Test mode validation completed"
 }
 
 # Main installation function
@@ -461,12 +640,23 @@ main() {
     echo "================================================"
     echo
     
+    # If in test mode, run validation and exit
+    if [ "$TEST_MODE" = "true" ]; then
+        run_test_mode
+        exit 0
+    fi
+    
     # Validate environment
     check_opnsense
     
     # Validate branch name
     if ! validate_branch "${BRANCH_NAME}"; then
         error_exit "Invalid branch name provided: ${BRANCH_NAME}"
+    fi
+    
+    # Validate WAN interfaces exist on the system
+    if ! validate_wan_interfaces "${WAN_INTERFACES}"; then
+        error_exit "Invalid WAN interfaces provided: ${WAN_INTERFACES}"
     fi
     
     # Check if running as root

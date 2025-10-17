@@ -24,8 +24,9 @@ SERVICES="rtsold dhcp6c radvd"
 #   ALT_DEFROUTE_IPV4="192.168.51.2"    # Primary firewall's LAN IP  
 #   ALT_DEFROUTE_IPV6="fd03:17ac:e938:1f00::2"
 #
-ALT_DEFROUTE_IPV4="192.168.1.2"     # Other firewall's LAN IP
-ALT_DEFROUTE_IPV6="fd00::2"          # Other firewall's IPv6 LAN IP
+# IMPORTANT: Update these to match your network configuration
+ALT_DEFROUTE_IPV4="192.168.51.3"       # Other firewall's LAN IP (UPDATE THIS)
+ALT_DEFROUTE_IPV6="fd03:17ac:e938:1f00::3"  # Other firewall's IPv6 LAN IP (UPDATE THIS)
 
 # Feature toggles
 ENABLE_IPV6="yes"                    # Enable IPv6 management
