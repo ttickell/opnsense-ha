@@ -2,14 +2,14 @@
 
 # OPNsense HA Singleton CARP Hook Script
 # Manages interface states, services, and routing based on CARP status
-# Version: 2.3 - Enhanced IPv6 service management with restart logic for CARP failover
+# Version: 2.4 - Enhanced interface and route management with configctl fallback
 #
 # Implementation Notes:
-# - Uses configctl interface linkup.start/stop (validated against OPNsense source)
+# - Uses configctl interface linkup.start/stop with verification and ifconfig fallback
+# - Enhanced route management: removes existing default routes before adding backup routes
+# - Fixes "route already in table" errors by properly managing route table
 # - Enhanced IPv6 service restart during CARP state transitions
-# - Fixes dhcp6c "Can't assign requested address" issues during failover
 # - Compatible with interface_suspend() patterns used in OPNsense 20-ppp hook
-# - Supports service status integration via configctl interface update carp service_status
 
 TAG="syshook-carp-ha-singleton"
 LOCKFILE="/var/run/${TAG}.lock"
@@ -146,9 +146,17 @@ manage_wan_interfaces() {
             "BACKUP")
                 if [ "${cur_status}" = "UP" ]; then
                     logger -p info -t ${TAG} "Bringing down ${WAN_INT} (CARP BACKUP)"
-                    if ! configctl interface linkup.stop "${WAN_INT}" 2>/dev/null; then
-                        logger -p warning -t ${TAG} "configctl linkup.stop failed, using ifconfig for ${WAN_INT}"
+                    # Try configctl first, then fall back to ifconfig 
+                    if ! configctl interface linkup.stop "${WAN_INT}" >/dev/null 2>&1; then
+                        logger -p info -t ${TAG} "configctl not available, using ifconfig for ${WAN_INT}"
                         ifconfig "${WAN_INT}" down
+                    else
+                        # Verify the interface went down
+                        sleep 1
+                        if [ "$(get_interface_status "${WAN_INT}")" = "UP" ]; then
+                            logger -p warning -t ${TAG} "configctl failed to bring down ${WAN_INT}, using ifconfig"
+                            ifconfig "${WAN_INT}" down
+                        fi
                     fi
                 else
                     debug_log "${WAN_INT} already DOWN, no action needed"
@@ -302,19 +310,59 @@ manage_services() {
 }
 
 # Route management functions
+get_default_routes() {
+    local family=$1
+    case "${family}" in
+        "ipv4")
+            netstat -rn -f inet | awk '/^default/ {print $2}'
+            ;;
+        "ipv6")
+            netstat -rn -f inet6 | awk '/^default/ {print $2}'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 check_route_exists() {
     local route_ip=$1
     local family=$2
     
     case "${family}" in
         "ipv4")
-            netstat -rn | grep -q "default.*${route_ip}"
+            netstat -rn -f inet | grep -q "default.*${route_ip}"
             ;;
         "ipv6")
-            netstat -rn | grep -q "default.*${route_ip}"
+            netstat -rn -f inet6 | grep -q "default.*${route_ip}"
             ;;
         *)
             return 1
+            ;;
+    esac
+}
+
+remove_default_routes() {
+    local family=$1
+    
+    logger -p info -t ${TAG} "Removing existing ${family} default routes"
+    
+    case "${family}" in
+        "ipv4")
+            get_default_routes "ipv4" | while read route_gw; do
+                if [ -n "${route_gw}" ]; then
+                    logger -p info -t ${TAG} "Removing IPv4 default route via ${route_gw}"
+                    route delete default "${route_gw}" 2>/dev/null || true
+                fi
+            done
+            ;;
+        "ipv6")
+            get_default_routes "ipv6" | while read route_gw; do
+                if [ -n "${route_gw}" ]; then
+                    logger -p info -t ${TAG} "Removing IPv6 default route via ${route_gw}"
+                    route -6 delete default "${route_gw}" 2>/dev/null || true
+                fi
+            done
             ;;
     esac
 }
@@ -344,27 +392,41 @@ manage_routes() {
     
     case "${CARP_STATUS}" in
         "MASTER")
-            # Remove alternate routes when becoming master
-            if [ "${ipv4_alt_route_exists}" = "true" ]; then
-                logger -p info -t ${TAG} "Removing IPv4 alternate default route"
+            # Remove any backup routes when becoming master (normal routing will be restored)
+            logger -p info -t ${TAG} "Removing backup routes (becoming MASTER)"
+            
+            if check_route_exists "${ALT_DEFROUTE_IPV4}" "ipv4"; then
+                logger -p info -t ${TAG} "Removing IPv4 backup route via ${ALT_DEFROUTE_IPV4}"
                 route delete default "${ALT_DEFROUTE_IPV4}" 2>/dev/null || true
             fi
             
-            if [ "${ENABLE_IPV6}" = "yes" ] && [ "${ipv6_alt_route_exists}" = "true" ]; then
-                logger -p info -t ${TAG} "Removing IPv6 alternate default route"
+            if [ "${ENABLE_IPV6}" = "yes" ] && check_route_exists "${ALT_DEFROUTE_IPV6}" "ipv6"; then
+                logger -p info -t ${TAG} "Removing IPv6 backup route via ${ALT_DEFROUTE_IPV6}"
                 route -6 delete default "${ALT_DEFROUTE_IPV6}" 2>/dev/null || true
             fi
             ;;
         "BACKUP")
-            # Add alternate routes when becoming backup
-            if [ "${ipv4_alt_route_exists}" = "false" ]; then
-                logger -p info -t ${TAG} "Adding IPv4 alternate default route"
-                route add default "${ALT_DEFROUTE_IPV4}" 2>/dev/null || true
+            # For BACKUP state, remove existing default routes and add backup routes
+            logger -p info -t ${TAG} "Configuring backup routing (removing current defaults, adding backup routes)"
+            
+            # Remove existing default routes first
+            remove_default_routes "ipv4"
+            if [ "${ENABLE_IPV6}" = "yes" ]; then
+                remove_default_routes "ipv6"
             fi
             
-            if [ "${ENABLE_IPV6}" = "yes" ] && [ "${ipv6_alt_route_exists}" = "false" ]; then
-                logger -p info -t ${TAG} "Adding IPv6 alternate default route"
-                route -6 add default "${ALT_DEFROUTE_IPV6}" 2>/dev/null || true
+            # Wait a moment for route table to settle
+            sleep 1
+            
+            # Add backup routes
+            logger -p info -t ${TAG} "Adding IPv4 backup default route via ${ALT_DEFROUTE_IPV4}"
+            route add default "${ALT_DEFROUTE_IPV4}" 2>/dev/null || \
+                logger -p warning -t ${TAG} "Failed to add IPv4 backup route"
+            
+            if [ "${ENABLE_IPV6}" = "yes" ]; then
+                logger -p info -t ${TAG} "Adding IPv6 backup default route via ${ALT_DEFROUTE_IPV6}"
+                route -6 add default "${ALT_DEFROUTE_IPV6}" 2>/dev/null || \
+                    logger -p warning -t ${TAG} "Failed to add IPv6 backup route"
             fi
             ;;
     esac
