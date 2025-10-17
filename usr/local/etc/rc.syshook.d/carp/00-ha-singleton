@@ -2,10 +2,11 @@
 
 # OPNsense HA Singleton CARP Hook Script
 # Manages interface states, services, and routing based on CARP status
-# Version: 2.4 - Enhanced interface and route management with configctl fallback
+# Version: 2.5 - Complete configctl fallback for both UP and DOWN interface management
 #
 # Implementation Notes:
-# - Uses configctl interface linkup.start/stop with verification and ifconfig fallback
+# - Complete configctl interface linkup.start/stop with verification and ifconfig fallback
+# - Handles both MASTER (UP) and BACKUP (DOWN) interface transitions reliably  
 # - Enhanced route management: removes existing default routes before adding backup routes
 # - Fixes "route already in table" errors by properly managing route table
 # - Enhanced IPv6 service restart during CARP state transitions
@@ -135,9 +136,17 @@ manage_wan_interfaces() {
             "MASTER")
                 if [ "${cur_status}" = "DOWN" ]; then
                     logger -p info -t ${TAG} "Bringing up ${WAN_INT} (CARP MASTER)"
-                    if ! configctl interface linkup.start "${WAN_INT}" 2>/dev/null; then
-                        logger -p warning -t ${TAG} "configctl linkup.start failed, using ifconfig for ${WAN_INT}"
+                    # Try configctl first, then fall back to ifconfig
+                    if ! configctl interface linkup.start "${WAN_INT}" >/dev/null 2>&1; then
+                        logger -p info -t ${TAG} "configctl not available, using ifconfig for ${WAN_INT}"
                         ifconfig "${WAN_INT}" up
+                    else
+                        # Verify the interface came up
+                        sleep 1
+                        if [ "$(get_interface_status "${WAN_INT}")" = "DOWN" ]; then
+                            logger -p warning -t ${TAG} "configctl failed to bring up ${WAN_INT}, using ifconfig"
+                            ifconfig "${WAN_INT}" up
+                        fi
                     fi
                 else
                     debug_log "${WAN_INT} already UP, no action needed"
