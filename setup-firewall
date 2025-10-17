@@ -81,6 +81,51 @@ usage() {
     exit 1
 }
 
+# Function to fix CARP flapping issues by disabling conflicting scripts
+fix_carp_flapping() {
+    log_info "Fixing CARP flapping issues by disabling conflicting legacy scripts..."
+    
+    local fixed_count=0
+    
+    # Disable old 00-ha-update script if it exists
+    if [ -f "/usr/local/etc/rc.syshook.d/carp/00-ha-update" ]; then
+        mv "/usr/local/etc/rc.syshook.d/carp/00-ha-update" \
+           "/usr/local/etc/rc.syshook.d/carp/00-ha-update.disabled" 2>/dev/null || true
+        chmod -x "/usr/local/etc/rc.syshook.d/carp/00-ha-update.disabled" 2>/dev/null || true
+        log_success "Disabled conflicting script: 00-ha-update"
+        fixed_count=$((fixed_count + 1))
+    fi
+    
+    # Disable old 99-ha-start script if it exists  
+    if [ -f "/usr/local/etc/rc.syshook.d/start/99-ha-start" ]; then
+        mv "/usr/local/etc/rc.syshook.d/start/99-ha-start" \
+           "/usr/local/etc/rc.syshook.d/start/99-ha-start.disabled" 2>/dev/null || true
+        chmod -x "/usr/local/etc/rc.syshook.d/start/99-ha-start.disabled" 2>/dev/null || true
+        log_success "Disabled conflicting script: 99-ha-start"
+        fixed_count=$((fixed_count + 1))
+    fi
+    
+    # Ensure already disabled scripts can't be executed
+    for disabled_script in \
+        "/usr/local/etc/rc.syshook.d/carp/00-ha-update.disabled" \
+        "/usr/local/etc/rc.syshook.d/start/99-ha-start.disabled"; do
+        if [ -f "${disabled_script}" ]; then
+            chmod -x "${disabled_script}" 2>/dev/null || true
+        fi
+    done
+    
+    # Clean up any legacy lock files and state files
+    rm -f /tmp/home-ha.lck 2>/dev/null || true
+    rm -f /tmp/home-ha.* 2>/dev/null || true
+    
+    if [ ${fixed_count} -gt 0 ]; then
+        log_success "Fixed ${fixed_count} conflicting script(s). CARP flapping should be resolved."
+        log_info "You may want to reboot the system to ensure all changes take effect."
+    else
+        log_info "No conflicting scripts found. CARP flapping fix not needed."
+    fi
+}
+
 # Parse command line arguments
 CLEANUP_FIRST=false
 FIX_FLAPPING_ONLY=false
@@ -228,50 +273,6 @@ cleanup_existing() {
     log_success "Cleanup completed"
 }
 
-# Function to fix CARP flapping issues by disabling conflicting scripts
-fix_carp_flapping() {
-    log_info "Fixing CARP flapping issues by disabling conflicting legacy scripts..."
-    
-    local fixed_count=0
-    
-    # Disable old 00-ha-update script if it exists
-    if [ -f "/usr/local/etc/rc.syshook.d/carp/00-ha-update" ]; then
-        mv "/usr/local/etc/rc.syshook.d/carp/00-ha-update" \
-           "/usr/local/etc/rc.syshook.d/carp/00-ha-update.disabled" 2>/dev/null || true
-        chmod -x "/usr/local/etc/rc.syshook.d/carp/00-ha-update.disabled" 2>/dev/null || true
-        log_success "Disabled conflicting script: 00-ha-update"
-        fixed_count=$((fixed_count + 1))
-    fi
-    
-    # Disable old 99-ha-start script if it exists  
-    if [ -f "/usr/local/etc/rc.syshook.d/start/99-ha-start" ]; then
-        mv "/usr/local/etc/rc.syshook.d/start/99-ha-start" \
-           "/usr/local/etc/rc.syshook.d/start/99-ha-start.disabled" 2>/dev/null || true
-        chmod -x "/usr/local/etc/rc.syshook.d/start/99-ha-start.disabled" 2>/dev/null || true
-        log_success "Disabled conflicting script: 99-ha-start"
-        fixed_count=$((fixed_count + 1))
-    fi
-    
-    # Ensure already disabled scripts can't be executed
-    for disabled_script in \
-        "/usr/local/etc/rc.syshook.d/carp/00-ha-update.disabled" \
-        "/usr/local/etc/rc.syshook.d/start/99-ha-start.disabled"; do
-        if [ -f "${disabled_script}" ]; then
-            chmod -x "${disabled_script}" 2>/dev/null || true
-        fi
-    done
-    
-    # Clean up any legacy lock files and state files
-    rm -f /tmp/home-ha.lck 2>/dev/null || true
-    rm -f /tmp/home-ha.* 2>/dev/null || true
-    
-    if [ ${fixed_count} -gt 0 ]; then
-        log_success "Fixed ${fixed_count} conflicting script(s). CARP flapping should be resolved."
-        log_info "You may want to reboot the system to ensure all changes take effect."
-    else
-        log_info "No conflicting scripts found. CARP flapping fix not needed."
-    fi
-}
 create_backup() {
     log_info "Creating backup in ${BACKUP_DIR}"
     mkdir -p "${BACKUP_DIR}"
