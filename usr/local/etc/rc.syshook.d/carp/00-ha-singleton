@@ -2,11 +2,13 @@
 
 # OPNsense HA Singleton CARP Hook Script
 # Manages interface states, services, and routing based on CARP status
-# Version: 2.5 - Complete configctl fallback for both UP and DOWN interface management
+# Version: 2.6 - Added interface reconfiguration for DHCP lease renewal and route restoration
 #
 # Implementation Notes:
 # - Complete configctl interface linkup.start/stop with verification and ifconfig fallback
 # - Handles both MASTER (UP) and BACKUP (DOWN) interface transitions reliably  
+# - Added interface reconfiguration for DHCP lease renewal and route restoration
+# - Uses configctl interface reconfigure/newip to restore full interface state
 # - Enhanced route management: removes existing default routes before adding backup routes
 # - Fixes "route already in table" errors by properly managing route table
 # - Enhanced IPv6 service restart during CARP state transitions
@@ -22,12 +24,14 @@ CARP_STATUS=$2
 
 # Default configuration (overridden by config file if it exists)
 WAN_INTS="__INT_LIST__"
+WAN_INTERFACE_MAP="wan:vtnet0_vlan110"  # Format: opnsense_name:device_name
 SERVICES="rtsold dhcp6c radvd"
 ALT_DEFROUTE_IPV4="192.168.105.2"
 ALT_DEFROUTE_IPV6="fd03:17ac:e938:10::2"
 ENABLE_IPV6="yes"
 ENABLE_SERVICE_MANAGEMENT="yes"
 ENABLE_ROUTE_MANAGEMENT="yes"
+ENABLE_INTERFACE_RECONFIGURE="yes"
 DEBUG="no"
 
 # Load configuration file if it exists
@@ -119,6 +123,26 @@ get_interface_status() {
     fi
 }
 
+# Map device name to OPNsense interface name for configctl commands
+get_opnsense_interface_name() {
+    local device_name=$1
+    
+    # Parse WAN_INTERFACE_MAP format: "opnsense_name:device_name"
+    echo "${WAN_INTERFACE_MAP}" | tr ' ' '\n' | while read mapping; do
+        if [ -n "${mapping}" ]; then
+            local opnsense_name=$(echo "${mapping}" | cut -d':' -f1)
+            local device=$(echo "${mapping}" | cut -d':' -f2)
+            if [ "${device}" = "${device_name}" ]; then
+                echo "${opnsense_name}"
+                return
+            fi
+        fi
+    done
+    
+    # Default fallback: assume 'wan' if no mapping found
+    echo "wan"
+}
+
 manage_wan_interfaces() {
     logger -p info -t ${TAG} "Managing WAN interfaces for CARP status: ${CARP_STATUS}"
     
@@ -147,6 +171,21 @@ manage_wan_interfaces() {
                             logger -p warning -t ${TAG} "configctl failed to bring up ${WAN_INT}, using ifconfig"
                             ifconfig "${WAN_INT}" up
                         fi
+                    fi
+                    
+                    # Critical: Trigger OPNsense interface reconfiguration for DHCP renewal and routing
+                    if [ "${ENABLE_INTERFACE_RECONFIGURE}" = "yes" ]; then
+                        local opnsense_interface=$(get_opnsense_interface_name "${WAN_INT}")
+                        logger -p info -t ${TAG} "Triggering interface reconfiguration for ${WAN_INT} (${opnsense_interface})"
+                        
+                        if ! configctl interface reconfigure "${opnsense_interface}" >/dev/null 2>&1; then
+                            logger -p warning -t ${TAG} "configctl interface reconfigure failed, triggering newip event"
+                            # Fallback: trigger newip event to restore DHCP lease and routes
+                            configctl interface newip "${opnsense_interface}" force >/dev/null 2>&1 || \
+                                logger -p warning -t ${TAG} "Failed to trigger newip event for ${WAN_INT}"
+                        fi
+                    else
+                        debug_log "Interface reconfiguration disabled, skipping DHCP renewal"
                     fi
                 else
                     debug_log "${WAN_INT} already UP, no action needed"

@@ -10,6 +10,15 @@
 #   Multi WAN:  "vtnet1 vtnet2 vtnet3"
 WAN_INTS="vtnet1 vtnet2"
 
+# WAN Interface Mapping (OPNsense interface name to device name)
+# Format: "opnsense_name:device_name opnsense_name2:device_name2"
+# This mapping is used for configctl interface reconfigure/newip commands
+# Examples:
+#   Single WAN: "wan:vtnet0_vlan110"
+#   Dual WAN:   "wan:vtnet1 wan2:vtnet2"
+#   Multi WAN:  "wan:vtnet1 wan2:vtnet2 wan3:vtnet3"
+WAN_INTERFACE_MAP="wan:vtnet1 wan2:vtnet2"
+
 # Services to manage based on CARP status
 SERVICES="rtsold dhcp6c radvd"
 
@@ -32,6 +41,7 @@ ALT_DEFROUTE_IPV6="fd03:17ac:e938:1f00::3"  # Other firewall's IPv6 LAN IP (UPDA
 ENABLE_IPV6="yes"                    # Enable IPv6 management
 ENABLE_SERVICE_MANAGEMENT="yes"      # Enable service start/stop
 ENABLE_ROUTE_MANAGEMENT="yes"        # Enable backup route management
+ENABLE_INTERFACE_RECONFIGURE="yes"   # Enable interface reconfiguration for DHCP renewal
 DEBUG="no"                          # Enable debug logging
 
 # IPv6 Integration settings
