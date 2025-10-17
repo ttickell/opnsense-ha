@@ -136,7 +136,7 @@ manage_wan_interfaces() {
                 if [ "${cur_status}" = "DOWN" ]; then
                     logger -p info -t ${TAG} "Bringing up ${WAN_INT} (CARP MASTER)"
                     if ! configctl interface linkup.start "${WAN_INT}" 2>/dev/null; then
-                        logger -p warning -t ${TAG} "configctl linkup failed, using ifconfig for ${WAN_INT}"
+                        logger -p warning -t ${TAG} "configctl linkup.start failed, using ifconfig for ${WAN_INT}"
                         ifconfig "${WAN_INT}" up
                     fi
                 else
@@ -147,7 +147,7 @@ manage_wan_interfaces() {
                 if [ "${cur_status}" = "UP" ]; then
                     logger -p info -t ${TAG} "Bringing down ${WAN_INT} (CARP BACKUP)"
                     if ! configctl interface linkup.stop "${WAN_INT}" 2>/dev/null; then
-                        logger -p warning -t ${TAG} "configctl linkup failed, using ifconfig for ${WAN_INT}"
+                        logger -p warning -t ${TAG} "configctl linkup.stop failed, using ifconfig for ${WAN_INT}"
                         ifconfig "${WAN_INT}" down
                     fi
                 else
