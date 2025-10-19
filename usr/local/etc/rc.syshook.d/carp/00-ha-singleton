@@ -5,10 +5,10 @@
 # Version: 2.7 - Added route verification and retry logic for failback scenarios
 #
 # Implementation Notes:
-# - Complete configctl interface linkup.start/stop with verification and ifconfig fallback
+# - Complete interface management via direct rc.linkup with verification and ifconfig fallback
 # - Handles both MASTER (UP) and BACKUP (DOWN) interface transitions reliably  
 # - Added interface reconfiguration for DHCP lease renewal and route restoration
-# - Uses configctl interface reconfigure/newip to restore full interface state
+# - Uses direct rc.configure_interface/rc.newwanip to restore full interface state
 # - Enhanced route management: removes existing default routes before adding backup routes
 # - Fixes "route already in table" errors by properly managing route table
 # - Enhanced IPv6 service restart during CARP state transitions
@@ -39,13 +39,6 @@ ENABLE_INTERFACE_RECONFIGURE="yes"
 ENABLE_ROUTE_VERIFICATION="yes"        # Enable route verification and automatic fixing
 ROUTE_RETRY_COUNT="3"                   # Number of times to retry route operations
 ROUTE_RETRY_DELAY="2"                   # Seconds between route retry attempts
-
-# DHCPv6 DUID override configuration (NEW in v2.7)
-# Essential for consistent DHCPv6 client identification in HA setups
-ENABLE_DHCP6C_DUID_OVERRIDE="yes"       # Enable DUID override functionality
-DHCP6C_DUID_OVERRIDE_FILE="/conf/dhcp6c_duid.override"  # Custom DUID file location
-DHCP6C_DUID_SYSTEM_FILE="/var/db/dhcp6c_duid"           # System DUID file location
-DHCP6C_DUID_BACKUP_FILE="/conf/dhcp6c_duid"             # OPNsense backup DUID location
 
 DEBUG="no"
 
@@ -175,17 +168,17 @@ manage_wan_interfaces() {
             "MASTER")
                 if [ "${cur_status}" = "DOWN" ]; then
                     logger -p info -t ${TAG} "Bringing up ${WAN_INT} (CARP MASTER)"
-                    # Try configctl first, then fall back to ifconfig
-                    if ! configctl interface linkup.start "${WAN_INT}" >/dev/null 2>&1; then
-                        logger -p info -t ${TAG} "configctl not available, using ifconfig for ${WAN_INT}"
-                        ifconfig "${WAN_INT}" up
-                    else
+                    # Use configctl with correct syntax (spaces not dots)
+                    if configctl interface linkup start "${WAN_INT}" >/dev/null 2>&1; then
                         # Verify the interface came up
                         sleep 1
                         if [ "$(get_interface_status "${WAN_INT}")" = "DOWN" ]; then
-                            logger -p warning -t ${TAG} "configctl failed to bring up ${WAN_INT}, using ifconfig"
+                            logger -p warning -t ${TAG} "configctl failed to bring up ${WAN_INT}, using ifconfig fallback"
                             ifconfig "${WAN_INT}" up
                         fi
+                    else
+                        logger -p info -t ${TAG} "configctl failed, using ifconfig fallback for ${WAN_INT}"
+                        ifconfig "${WAN_INT}" up
                     fi
                     
                     # Critical: Trigger OPNsense interface reconfiguration for DHCP renewal and routing
@@ -193,10 +186,10 @@ manage_wan_interfaces() {
                         local opnsense_interface=$(get_opnsense_interface_name "${WAN_INT}")
                         logger -p info -t ${TAG} "Triggering interface reconfiguration for ${WAN_INT} (${opnsense_interface})"
                         
-                        if ! configctl interface reconfigure "${opnsense_interface}" >/dev/null 2>&1; then
-                            logger -p warning -t ${TAG} "configctl interface reconfigure failed, triggering newip event"
+                        if ! /usr/local/etc/rc.configure_interface "${opnsense_interface}" >/dev/null 2>&1; then
+                            logger -p warning -t ${TAG} "interface reconfigure failed, triggering newip event"
                             # Fallback: trigger newip event to restore DHCP lease and routes
-                            configctl interface newip "${opnsense_interface}" force >/dev/null 2>&1 || \
+                            /usr/local/etc/rc.newwanip "${opnsense_interface}" force >/dev/null 2>&1 || \
                                 logger -p warning -t ${TAG} "Failed to trigger newip event for ${WAN_INT}"
                         fi
                     else
@@ -209,17 +202,17 @@ manage_wan_interfaces() {
             "BACKUP")
                 if [ "${cur_status}" = "UP" ]; then
                     logger -p info -t ${TAG} "Bringing down ${WAN_INT} (CARP BACKUP)"
-                    # Try configctl first, then fall back to ifconfig 
-                    if ! configctl interface linkup.stop "${WAN_INT}" >/dev/null 2>&1; then
-                        logger -p info -t ${TAG} "configctl not available, using ifconfig for ${WAN_INT}"
-                        ifconfig "${WAN_INT}" down
-                    else
+                    # Use configctl with correct syntax (spaces not dots)
+                    if configctl interface linkup stop "${WAN_INT}" >/dev/null 2>&1; then
                         # Verify the interface went down
                         sleep 1
                         if [ "$(get_interface_status "${WAN_INT}")" = "UP" ]; then
-                            logger -p warning -t ${TAG} "configctl failed to bring down ${WAN_INT}, using ifconfig"
+                            logger -p warning -t ${TAG} "configctl failed to bring down ${WAN_INT}, using ifconfig fallback"
                             ifconfig "${WAN_INT}" down
                         fi
+                    else
+                        logger -p info -t ${TAG} "configctl failed, using ifconfig fallback for ${WAN_INT}"
+                        ifconfig "${WAN_INT}" down
                     fi
                 else
                     debug_log "${WAN_INT} already DOWN, no action needed"
@@ -491,8 +484,8 @@ verify_and_fix_master_routes() {
                     sleep 2
                     
                     # Trigger configctl reconfiguration again
-                    configctl interface reconfigure "${opnsense_interface}" >/dev/null 2>&1 || \
-                        configctl interface newip "${opnsense_interface}" force >/dev/null 2>&1
+                    /usr/local/etc/rc.configure_interface "${opnsense_interface}" >/dev/null 2>&1 || \
+                        /usr/local/etc/rc.newwanip "${opnsense_interface}" force >/dev/null 2>&1
                     
                     # Wait and verify again
                     sleep ${ROUTE_RETRY_DELAY}
@@ -679,8 +672,8 @@ trigger_ipv6_updates() {
     fi
     
     # Update CARP service status for IPv6
-    if [ -x "/usr/local/bin/configctl" ]; then
-        configctl interface update carp service_status 2>/dev/null || true
+    if [ -x "/usr/local/sbin/carp_service_status" ]; then
+        /usr/local/sbin/carp_service_status 2>/dev/null || true
     fi
 }
 
@@ -731,9 +724,9 @@ main() {
     trigger_ipv6_updates
     
     # Update CARP service status (OPNsense HA health monitoring integration)
-    if command -v configctl >/dev/null 2>&1; then
+    if command -v /usr/local/sbin/carp_service_status >/dev/null 2>&1; then
         logger -p debug -t ${TAG} "Updating CARP service status"
-        configctl interface update carp service_status 2>/dev/null || true
+        /usr/local/sbin/carp_service_status 2>/dev/null || true
     fi
     
     logger -p info -t ${TAG} "HA failover processing completed successfully"
