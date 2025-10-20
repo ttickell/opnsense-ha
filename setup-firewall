@@ -261,7 +261,6 @@ cleanup_existing() {
         /usr/local/etc/ha-singleton.conf
         /usr/local/bin/ha-ipv6-integration.sh
         /usr/local/bin/debug_log
-        /usr/local/etc/rc.carp_service_status.d/wan_connectivity
     "
     
     for file in ${files_to_remove}; do
@@ -427,7 +426,6 @@ install_files_from_directory() {
     # Create necessary directories
     mkdir -p /usr/local/etc/rc.syshook.d/carp
     mkdir -p /usr/local/bin
-    mkdir -p /usr/local/etc/rc.carp_service_status.d
     
     # Install main CARP script
     if [ -f "${source_dir}/usr/local/etc/rc.syshook.d/carp/00-ha-singleton" ]; then
@@ -475,9 +473,6 @@ install_files_from_directory() {
         chmod 755 /usr/local/etc/rc.syshook.d/start/25-duid-override
         log_success "Installed DHCPv6 DUID override hook"
     fi
-    
-    # Create the CARP service status directory (for future use)
-    mkdir -p /usr/local/etc/rc.carp_service_status.d
 }
 
 # Function to install using embedded files (fallback)
@@ -492,7 +487,7 @@ install_embedded() {
 
 # Function to validate DUID configuration for HA setups
 validate_ha_duid_configuration() {
-    log_info "Validating DHCPv6 DUID configuration for HA..."
+    log_info "Validating DHCP configuration for HA..."
     
     # Check if this appears to be an HA environment
     local ha_detected=false
@@ -505,8 +500,9 @@ validate_ha_duid_configuration() {
         log_info "HA environment detected"
     fi
     
-    # If HA is detected, check for DUID override file
+    # If HA is detected, check for DHCPv6 DUID override file
     if [ "${ha_detected}" = "true" ]; then
+        # Check DHCPv6 DUID override  
         if [ ! -f "/conf/dhcp6c_duid.override" ]; then
             echo
             log_error "HA environment detected but DHCPv6 DUID override file is missing!"

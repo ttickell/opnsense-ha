@@ -1,0 +1,112 @@
+# DHCP Requests
+These are the dhcp requests as captured with tcpdump -i <interface> -v port 67 or port 68
+
+## Primary (Physical) Firewall
+'''
+root@router:~ # tcpdump -i igc1 -v port 67 or port 68
+tcpdump: listening on igc1, link-type EN10MB (Ethernet), snapshot length 262144 bytes
+11:30:18.042625 IP (tos 0x10, ttl 128, id 0, offset 0, flags [none], proto UDP (17), length 328)
+    0.0.0.0.bootpc > 255.255.255.255.bootps: BOOTP/DHCP, Request from a8:b8:e0:02:a4:5e (oui Unknown), length 300, xid 0x500fec5c, Flags [none]
+	  Client-Ethernet-Address a8:b8:e0:02:a4:5e (oui Unknown)
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: Request
+	    Requested-IP (50), length 4: c-67-187-60-189.hsd1.ga.comcast.net
+	    Client-ID (61), length 7: ether a8:b8:e0:02:a4:5e
+	    Hostname (12), length 6: "router"
+	    Parameter-Request (55), length 10: 
+	      Subnet-Mask (1), BR (28), Time-Zone (2), Classless-Static-Route (121)
+	      Default-Gateway (3), Domain-Name (15), Domain-Name-Server (6), Hostname (12)
+	      Unknown (119), MTU (26)
+11:30:18.092405 IP (tos 0x0, ttl 63, id 33381, offset 0, flags [DF], proto UDP (17), length 354)
+    96.120.21.237.bootps > c-67-187-60-189.hsd1.ga.comcast.net.bootpc: BOOTP/DHCP, Reply, length 326, xid 0x500fec5c, Flags [none]
+	  Your-IP c-67-187-60-189.hsd1.ga.comcast.net
+	  Gateway-IP 96.120.21.237
+	  Client-Ethernet-Address a8:b8:e0:02:a4:5e (oui Unknown)
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: ACK
+	    Server-ID (54), length 4: npls01dhcp-atlt-02p.sys.comcast.net
+	    Lease-Time (51), length 4: 3368
+	    Subnet-Mask (1), length 4: 255.255.254.0
+	    BR (28), length 4: 255.255.255.255
+	    Default-Gateway (3), length 4: c-67-187-60-1.hsd1.ga.comcast.net
+	    Domain-Name (15), length 20: "hsd1.fl.comcast.net."
+	    Domain-Name-Server (6), length 8: cdns01.comcast.net,cdns02.comcast.net
+	    RN (58), length 4: 407
+	    RB (59), length 4: 2468
+	    Hostname (12), length 6: "router"
+        '''
+## Secondary (VM based) Firewall
+root@router-b:~ # tcpdump -i vtnet5 -v port 67 or port 68
+tcpdump: listening on vtnet5, link-type EN10MB (Ethernet), snapshot length 262144 bytes
+
+'''
+10:55:25.289014 IP (tos 0x10, ttl 128, id 0, offset 0, flags [none], proto UDP (17), length 328)
+    0.0.0.0.bootpc > 255.255.255.255.bootps: BOOTP/DHCP, Request from a8:b8:e0:02:a4:5e (oui Unknown), length 300, xid 0x9895f7c6, Flags [none]
+	  Client-Ethernet-Address a8:b8:e0:02:a4:5e (oui Unknown)
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: Discover
+	    Requested-IP (50), length 4: c-24-129-124-235.hsd1.fl.comcast.net
+	    Client-ID (61), length 7: ether a8:b8:e0:02:a4:5e
+	    Hostname (12), length 8: "router-b"
+	    Parameter-Request (55), length 10: 
+	      Subnet-Mask (1), BR (28), Time-Zone (2), Classless-Static-Route (121)
+	      Default-Gateway (3), Domain-Name (15), Domain-Name-Server (6), Hostname (12)
+	      Unknown (119), MTU (26)
+10:55:27.315249 IP (tos 0x10, ttl 128, id 0, offset 0, flags [none], proto UDP (17), length 328)
+    0.0.0.0.bootpc > 255.255.255.255.bootps: BOOTP/DHCP, Request from a8:b8:e0:02:a4:5e (oui Unknown), length 300, xid 0x9895f7c6, secs 2, Flags [none]
+	  Client-Ethernet-Address a8:b8:e0:02:a4:5e (oui Unknown)
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: Discover
+	    Requested-IP (50), length 4: c-24-129-124-235.hsd1.fl.comcast.net
+	    Client-ID (61), length 7: ether a8:b8:e0:02:a4:5e
+	    Hostname (12), length 8: "router-b"
+	    Parameter-Request (55), length 10: 
+	      Subnet-Mask (1), BR (28), Time-Zone (2), Classless-Static-Route (121)
+	      Default-Gateway (3), Domain-Name (15), Domain-Name-Server (6), Hostname (12)
+	      Unknown (119), MTU (26)
+10:55:30.382111 IP (tos 0x10, ttl 128, id 0, offset 0, flags [none], proto UDP (17), length 328)
+    0.0.0.0.bootpc > 255.255.255.255.bootps: BOOTP/DHCP, Request from a8:b8:e0:02:a4:5e (oui Unknown), length 300, xid 0x9895f7c6, secs 5, Flags [none]
+	  Client-Ethernet-Address a8:b8:e0:02:a4:5e (oui Unknown)
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: Discover
+	    Requested-IP (50), length 4: c-24-129-124-235.hsd1.fl.comcast.net
+	    Client-ID (61), length 7: ether a8:b8:e0:02:a4:5e
+	    Hostname (12), length 8: "router-b"
+	    Parameter-Request (55), length 10: 
+	      Subnet-Mask (1), BR (28), Time-Zone (2), Classless-Static-Route (121)
+	      Default-Gateway (3), Domain-Name (15), Domain-Name-Server (6), Hostname (12)
+	      Unknown (119), MTU (26)
+10:55:35.413580 IP (tos 0x10, ttl 128, id 0, offset 0, flags [none], proto UDP (17), length 328)
+    0.0.0.0.bootpc > 255.255.255.255.bootps: BOOTP/DHCP, Request from a8:b8:e0:02:a4:5e (oui Unknown), length 300, xid 0x9895f7c6, secs 10, Flags [none]
+	  Client-Ethernet-Address a8:b8:e0:02:a4:5e (oui Unknown)
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: Discover
+	    Requested-IP (50), length 4: c-24-129-124-235.hsd1.fl.comcast.net
+	    Client-ID (61), length 7: ether a8:b8:e0:02:a4:5e
+	    Hostname (12), length 8: "router-b"
+	    Parameter-Request (55), length 10: 
+	      Subnet-Mask (1), BR (28), Time-Zone (2), Classless-Static-Route (121)
+	      Default-Gateway (3), Domain-Name (15), Domain-Name-Server (6), Hostname (12)
+	      Unknown (119), MTU (26)
+10:55:44.429957 IP (tos 0x10, ttl 128, id 0, offset 0, flags [none], proto UDP (17), length 328)
+    0.0.0.0.bootpc > 255.255.255.255.bootps: BOOTP/DHCP, Request from a8:b8:e0:02:a4:5e (oui Unknown), length 300, xid 0x9895f7c6, secs 19, Flags [none]
+	  Client-Ethernet-Address a8:b8:e0:02:a4:5e (oui Unknown)
+	  Vendor-rfc1048 Extensions
+	    Magic Cookie 0x63825363
+	    DHCP-Message (53), length 1: Discover
+	    Requested-IP (50), length 4: c-24-129-124-235.hsd1.fl.comcast.net
+	    Client-ID (61), length 7: ether a8:b8:e0:02:a4:5e
+	    Hostname (12), length 8: "router-b"
+	    Parameter-Request (55), length 10: 
+	      Subnet-Mask (1), BR (28), Time-Zone (2), Classless-Static-Route (121)
+	      Default-Gateway (3), Domain-Name (15), Domain-Name-Server (6), Hostname (12)
+	      Unknown (119), MTU (26)
+Connection to 192.168.105.3 closed by remote host.
+Connection to 192.168.105.3 closed.
+'''

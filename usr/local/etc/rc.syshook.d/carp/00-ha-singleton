@@ -2,7 +2,7 @@
 
 # OPNsense HA Singleton CARP Hook Script
 # Manages interface states, services, and routing based on CARP status
-# Version: 2.7 - Added route verification and retry logic for failback scenarios
+# Version: 2.8 - Added DHCP lease clearing for cable modem compatibility
 #
 # Implementation Notes:
 # - Complete interface management via direct rc.linkup with verification and ifconfig fallback
@@ -13,6 +13,7 @@
 # - Fixes "route already in table" errors by properly managing route table
 # - Enhanced IPv6 service restart during CARP state transitions
 # - Added route verification and retry logic to ensure failback routing works
+# - Added DHCP lease clearing to address cable modem stale lease issues
 # - Compatible with interface_suspend() patterns used in OPNsense 20-ppp hook
 
 TAG="syshook-carp-ha-singleton"
@@ -33,6 +34,7 @@ ENABLE_IPV6="yes"
 ENABLE_SERVICE_MANAGEMENT="yes"
 ENABLE_ROUTE_MANAGEMENT="yes"
 ENABLE_INTERFACE_RECONFIGURE="yes"
+ENABLE_DHCP_LEASE_CLEARING="yes"        # Clear stale DHCP leases before interface restart
 
 # Route verification and retry configuration (NEW in v2.7)
 # These settings address ARP resolution issues and timing problems during failback
@@ -151,6 +153,47 @@ get_opnsense_interface_name() {
     echo "wan"
 }
 
+# DHCP lease clearing function - addresses cable modem stale lease issues
+clear_dhcp_leases() {
+    if [ "${ENABLE_DHCP_LEASE_CLEARING}" != "yes" ]; then
+        debug_log "DHCP lease clearing disabled, skipping"
+        return
+    fi
+    
+    logger -p info -t ${TAG} "Clearing stale DHCP leases for clean failover"
+    
+    # Clear DHCP client lease files to force fresh DHCP negotiation
+    # This addresses issues with cable modems (like Comcast) that maintain
+    # stale lease state and reject renewals from virtual firewalls
+    local dhcp_lease_files="/var/db/dhclient.leases*"
+    
+    for lease_file in ${dhcp_lease_files}; do
+        if [ -f "${lease_file}" ]; then
+            logger -p info -t ${TAG} "Removing DHCP lease file: ${lease_file}"
+            rm -f "${lease_file}" 2>/dev/null || \
+                logger -p warning -t ${TAG} "Failed to remove lease file: ${lease_file}"
+        fi
+    done
+    
+    # Also clear any interface-specific lease files
+    for WAN_INT in ${WAN_INTS}; do
+        local lease_file="/var/db/dhclient.leases.${WAN_INT}"
+        if [ -f "${lease_file}" ]; then
+            logger -p info -t ${TAG} "Removing interface-specific lease file: ${lease_file}"
+            rm -f "${lease_file}" 2>/dev/null || \
+                logger -p warning -t ${TAG} "Failed to remove lease file: ${lease_file}"
+        fi
+    done
+    
+    # Clear OPNsense DHCP client state files if they exist
+    local opnsense_dhcp_state="/var/dhcpd/var/db"
+    if [ -d "${opnsense_dhcp_state}" ]; then
+        find "${opnsense_dhcp_state}" -name "dhclient*.lease*" -type f -exec rm -f {} \; 2>/dev/null || true
+    fi
+    
+    logger -p info -t ${TAG} "DHCP lease clearing completed"
+}
+
 manage_wan_interfaces() {
     logger -p info -t ${TAG} "Managing WAN interfaces for CARP status: ${CARP_STATUS}"
     
@@ -181,6 +224,10 @@ manage_wan_interfaces() {
                         ifconfig "${WAN_INT}" up
                     fi
                     
+                    # Critical: Clear stale DHCP leases BEFORE interface reconfiguration
+                    # This addresses cable modem lease binding issues with virtual firewalls
+                    clear_dhcp_leases
+                    
                     # Critical: Trigger OPNsense interface reconfiguration for DHCP renewal and routing
                     if [ "${ENABLE_INTERFACE_RECONFIGURE}" = "yes" ]; then
                         local opnsense_interface=$(get_opnsense_interface_name "${WAN_INT}")
@@ -196,7 +243,19 @@ manage_wan_interfaces() {
                         debug_log "Interface reconfiguration disabled, skipping DHCP renewal"
                     fi
                 else
-                    debug_log "${WAN_INT} already UP, no action needed"
+                    # Interface already UP - trigger lease renewal for clean MASTER state
+                    if [ "${ENABLE_INTERFACE_RECONFIGURE}" = "yes" ]; then
+                        local opnsense_interface=$(get_opnsense_interface_name "${WAN_INT}")
+                        
+                        # Clear stale leases before renewal for clean MASTER state
+                        clear_dhcp_leases
+                        
+                        # Trigger lease renewal to establish fresh DHCP state
+                        configctl interface newip "${opnsense_interface}" >/dev/null 2>&1 || \
+                            logger -p warning -t ${TAG} "Failed to trigger DHCP renewal for ${WAN_INT}"
+                    else
+                        debug_log "${WAN_INT} already UP, no action needed"
+                    fi
                 fi
                 ;;
             "BACKUP")

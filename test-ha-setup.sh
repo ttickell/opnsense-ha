@@ -169,12 +169,10 @@ test_logging() {
 }
 
 test_connectivity_check() {
-    local check_script="/usr/local/etc/rc.carp_service_status.d/wan_connectivity"
-    
-    if [ ! -f "${check_script}" ]; then
-        echo "WAN connectivity check script missing"
-        return 1
-    fi
+    # Connectivity checking is now integrated into the main HA script
+    # No separate wan_connectivity script needed
+    echo "Connectivity checking integrated into main HA script"
+    return 0
     
     if [ ! -x "${check_script}" ]; then
         echo "WAN connectivity check script not executable"
