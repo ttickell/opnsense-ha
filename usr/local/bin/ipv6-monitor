@@ -1,0 +1,172 @@
+#!/bin/sh
+
+# IPv6 Connectivity Monitor Shell Wrapper
+# Provides shell interface for IPv6 monitoring integration with OPNsense HA
+# Version: 1.0 - Phase 3 IPv6 HA Integration
+
+MONITOR_SCRIPT="/usr/local/bin/ipv6-connectivity-monitor.py"
+LOCK_FILE="/var/run/ipv6-monitor.lock"
+PID_FILE="/var/run/ipv6-monitor.pid"
+
+# Function to check if monitor is running
+is_running() {
+    if [ -f "${PID_FILE}" ]; then
+        local pid=$(cat "${PID_FILE}" 2>/dev/null)
+        if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+            return 0
+        else
+            # Clean up stale PID file
+            rm -f "${PID_FILE}"
+            return 1
+        fi
+    fi
+    return 1
+}
+
+# Function to start monitoring daemon
+start_daemon() {
+    if is_running; then
+        echo "IPv6 monitoring daemon already running (PID: $(cat "${PID_FILE}"))"
+        return 0
+    fi
+    
+    echo "Starting IPv6 connectivity monitoring daemon..."
+    
+    # Start daemon in background
+    nohup "${MONITOR_SCRIPT}" --daemon >/dev/null 2>&1 &
+    local daemon_pid=$!
+    
+    # Save PID
+    echo "${daemon_pid}" > "${PID_FILE}"
+    
+    # Wait a moment and check if it's still running
+    sleep 2
+    if kill -0 "${daemon_pid}" 2>/dev/null; then
+        echo "IPv6 monitoring daemon started (PID: ${daemon_pid})"
+        return 0
+    else
+        echo "Failed to start IPv6 monitoring daemon"
+        rm -f "${PID_FILE}"
+        return 1
+    fi
+}
+
+# Function to stop monitoring daemon
+stop_daemon() {
+    if is_running; then
+        local pid=$(cat "${PID_FILE}")
+        echo "Stopping IPv6 monitoring daemon (PID: ${pid})..."
+        
+        kill -TERM "${pid}" 2>/dev/null
+        
+        # Wait for graceful shutdown
+        local count=0
+        while [ ${count} -lt 10 ] && kill -0 "${pid}" 2>/dev/null; do
+            sleep 1
+            count=$((count + 1))
+        done
+        
+        # Force kill if still running
+        if kill -0 "${pid}" 2>/dev/null; then
+            echo "Force killing IPv6 monitoring daemon..."
+            kill -KILL "${pid}" 2>/dev/null
+        fi
+        
+        rm -f "${PID_FILE}"
+        echo "IPv6 monitoring daemon stopped"
+        return 0
+    else
+        echo "IPv6 monitoring daemon not running"
+        return 1
+    fi
+}
+
+# Function to restart daemon
+restart_daemon() {
+    stop_daemon
+    sleep 1
+    start_daemon
+}
+
+# Function to get status
+get_status() {
+    if [ -x "${MONITOR_SCRIPT}" ]; then
+        "${MONITOR_SCRIPT}" --status "$@"
+    else
+        echo "IPv6 monitoring script not found or not executable"
+        return 1
+    fi
+}
+
+# Function to run single check
+run_check() {
+    if [ -x "${MONITOR_SCRIPT}" ]; then
+        "${MONITOR_SCRIPT}" --check "$@"
+    else
+        echo "IPv6 monitoring script not found or not executable"
+        return 1
+    fi
+}
+
+# Function to show daemon status
+daemon_status() {
+    if is_running; then
+        local pid=$(cat "${PID_FILE}")
+        echo "IPv6 monitoring daemon is running (PID: ${pid})"
+        
+        # Show process details if available
+        if command -v ps >/dev/null 2>&1; then
+            ps -p "${pid}" -o pid,ppid,time,command 2>/dev/null || true
+        fi
+        
+        return 0
+    else
+        echo "IPv6 monitoring daemon is not running"
+        return 1
+    fi
+}
+
+# Main command processing
+case "${1:-}" in
+    "start")
+        start_daemon
+        ;;
+    "stop")
+        stop_daemon
+        ;;
+    "restart")
+        restart_daemon
+        ;;
+    "status")
+        shift
+        get_status "$@"
+        ;;
+    "check")
+        shift
+        run_check "$@"
+        ;;
+    "daemon-status")
+        daemon_status
+        ;;
+    "is-running")
+        is_running && echo "running" || echo "stopped"
+        ;;
+    *)
+        echo "IPv6 Connectivity Monitor Control Script"
+        echo "Usage: $0 {start|stop|restart|status|check|daemon-status|is-running}"
+        echo ""
+        echo "Commands:"
+        echo "  start         - Start monitoring daemon"
+        echo "  stop          - Stop monitoring daemon"  
+        echo "  restart       - Restart monitoring daemon"
+        echo "  status        - Get current connectivity status"
+        echo "  check         - Run single connectivity check"
+        echo "  daemon-status - Show daemon process status"
+        echo "  is-running    - Check if daemon is running"
+        echo ""
+        echo "Status and check commands support additional options:"
+        echo "  --json        - Output in JSON format"
+        echo "  --verbose     - Verbose output"
+        exit 1
+        ;;
+esac

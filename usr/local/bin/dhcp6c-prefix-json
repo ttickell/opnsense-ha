@@ -1,0 +1,251 @@
+#!/usr/local/bin/python3
+
+# OPNsense HA IPv6 Prefix Delegation JSON Manager
+# Standards-compliant location: /usr/local/bin/dhcp6c-prefix-json
+# 
+# Purpose: Parse dhcp6c configuration and prefix files to maintain JSON state
+# of IPv6 prefix delegations for HA IPv6 management
+#
+# IMPORTANT: Requires OPNsense DHCPv6 logging set to "Info" level
+# (Interfaces -> Settings -> IPv6 DHCP -> Log Level: Info)
+
+import json
+import re
+import os
+import sys
+from datetime import datetime
+
+# Configuration
+DEBUG = True
+SAVE_FILE = "/var/db/ipv6-ha/dhcp6c-delegations.json"
+DHCP6C_CONF_FILE = "/var/etc/dhcp6c.conf"
+PREFIX_FILE_TEMPLATE = "/tmp/{}_prefixv6"
+BACKUP_DIR = "/var/db/ipv6-ha/backups"
+
+def debug_log(message):
+    """Debug logging function"""
+    if DEBUG:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] DEBUG: {message}")
+
+def ensure_directories():
+    """Ensure required directories exist"""
+    os.makedirs(os.path.dirname(SAVE_FILE), exist_ok=True)
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+
+def load_existing_data():
+    """Load existing prefix delegation data"""
+    existing_pd_data = {}
+    if os.path.exists(SAVE_FILE):
+        try:
+            with open(SAVE_FILE, 'r') as f:
+                loaded_data = json.load(f)
+            
+            # Handle both old format (direct PD data) and new format (with summary)
+            if "prefix_delegations" in loaded_data:
+                existing_pd_data = loaded_data["prefix_delegations"]
+            else:
+                # Assume old format - direct PD data
+                existing_pd_data = loaded_data
+                
+            debug_log(f"Loaded existing data with {len(existing_pd_data)} PD entries")
+        except (json.JSONDecodeError, IOError) as e:
+            debug_log(f"Could not load existing JSON file: {e}")
+            existing_pd_data = {}
+    return existing_pd_data
+
+def parse_dhcp6c_config():
+    """Parse dhcp6c.conf to extract interface and PD ID mappings"""
+    iface_pdids = {}
+    current_iface = None
+    pd_regex = re.compile(r'^send ia-pd\s+(\d+);')
+    iface_block_regex = re.compile(r'^interface\s+(\S+)\s*\{')
+    
+    if not os.path.exists(DHCP6C_CONF_FILE):
+        debug_log(f"DHCPv6 config file not found: {DHCP6C_CONF_FILE}")
+        return {}
+    
+    with open(DHCP6C_CONF_FILE, 'r') as f:
+        for line in f:
+            line_stripped = line.strip()
+            iface_match = iface_block_regex.match(line_stripped)
+            
+            if iface_match:
+                current_iface = iface_match.group(1)
+                if current_iface not in iface_pdids:
+                    iface_pdids[current_iface] = []
+            elif current_iface:
+                match = pd_regex.match(line_stripped)
+                if match:
+                    pdid = match.group(1)
+                    if pdid not in iface_pdids[current_iface]:
+                        iface_pdids[current_iface].append(pdid)
+            
+            if line_stripped.startswith('};'):
+                current_iface = None
+    
+    debug_log(f"Parsed dhcp6c config:")
+    for iface, pdids in iface_pdids.items():
+        debug_log(f"  {iface}: PD IDs {pdids}")
+    
+    return iface_pdids
+
+def backup_current_state():
+    """Create backup of current state file"""
+    if os.path.exists(SAVE_FILE):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_file = f"{BACKUP_DIR}/dhcp6c-delegations_{timestamp}.json"
+        try:
+            import shutil
+            shutil.copy2(SAVE_FILE, backup_file)
+            debug_log(f"Created backup: {backup_file}")
+        except Exception as e:
+            debug_log(f"Failed to create backup: {e}")
+
+def process_prefix_delegations(iface_pdids, existing_pd_data):
+    """Process current prefix delegations and update state"""
+    pd_delegations = existing_pd_data.copy()
+    current_timestamp = datetime.now().isoformat()
+    
+    for iface, pdids in iface_pdids.items():
+        prefix_file = PREFIX_FILE_TEMPLATE.format(iface)
+        debug_log(f"Processing interface: {iface}")
+        debug_log(f"  PD IDs: {pdids}")
+        debug_log(f"  Prefix file: {prefix_file}")
+        debug_log(f"  File exists: {os.path.exists(prefix_file)}")
+        
+        if not os.path.exists(prefix_file):
+            debug_log(f"  Prefix file missing for {iface}, preserving existing data")
+            # Mark existing PD entries for this interface as potentially stale
+            for pdid in pdids:
+                if pdid in pd_delegations:
+                    if "last_seen" not in pd_delegations[pdid]:
+                        pd_delegations[pdid]["last_seen"] = current_timestamp
+                    pd_delegations[pdid]["status"] = "prefix_file_missing"
+                    debug_log(f"    Preserved existing PD {pdid}: {pd_delegations[pdid]['prefix']}")
+            continue
+        
+        # Read prefix file
+        try:
+            with open(prefix_file, 'r') as pf:
+                prefixes = [line.strip() for line in pf if line.strip()]
+            debug_log(f"  Prefixes found: {prefixes}")
+        except IOError as e:
+            debug_log(f"  Error reading prefix file: {e}")
+            continue
+        
+        # Process each prefix
+        for pdid, prefix in zip(pdids, prefixes):
+            debug_log(f"    Processing prefix {prefix} for PD {pdid}")
+            
+            if pdid in pd_delegations:
+                # Check if prefix has changed
+                if pd_delegations[pdid]["prefix"] != prefix:
+                    debug_log(f"    Prefix changed for PD {pdid}: {pd_delegations[pdid]['prefix']} -> {prefix}")
+                    # Store previous prefix in history
+                    if "prefix_history" not in pd_delegations[pdid]:
+                        pd_delegations[pdid]["prefix_history"] = []
+                    pd_delegations[pdid]["prefix_history"].append({
+                        "prefix": pd_delegations[pdid]["prefix"],
+                        "timestamp": pd_delegations[pdid].get("last_updated", "unknown")
+                    })
+                    pd_delegations[pdid]["prefix"] = prefix
+                
+                # Update metadata
+                pd_delegations[pdid]["status"] = "active"
+                pd_delegations[pdid]["last_updated"] = current_timestamp
+                pd_delegations[pdid]["interface"] = iface
+            else:
+                debug_log(f"    Creating new PD entry for {pdid}")
+                pd_delegations[pdid] = {
+                    "prefix": prefix,
+                    "interface": iface,
+                    "allocations": False,
+                    "interfaces": {},
+                    "status": "active",
+                    "created": current_timestamp,
+                    "last_updated": current_timestamp
+                }
+    
+    return pd_delegations
+
+def generate_summary(pd_delegations):
+    """Generate summary statistics"""
+    summary = {
+        "total_pds": len(pd_delegations),
+        "active_pds": len([pd for pd in pd_delegations.values() if pd.get("status") == "active"]),
+        "missing_prefix_files": len([pd for pd in pd_delegations.values() if pd.get("status") == "prefix_file_missing"]),
+        "last_run": datetime.now().isoformat(),
+        "interfaces": {}
+    }
+    
+    # Add per-interface statistics
+    for pd in pd_delegations.values():
+        interface = pd.get("interface", "unknown")
+        if interface not in summary["interfaces"]:
+            summary["interfaces"][interface] = {"count": 0, "active": 0}
+        summary["interfaces"][interface]["count"] += 1
+        if pd.get("status") == "active":
+            summary["interfaces"][interface]["active"] += 1
+    
+    return summary
+
+def save_delegation_data(pd_delegations, summary):
+    """Save delegation data to JSON file"""
+    output_data = {
+        "summary": summary,
+        "prefix_delegations": pd_delegations
+    }
+    
+    debug_log(f"Saving {len(pd_delegations)} PD entries to {SAVE_FILE}")
+    debug_log(f"Summary: {summary}")
+    
+    # Atomic write
+    temp_file = f"{SAVE_FILE}.tmp"
+    try:
+        with open(temp_file, 'w') as f:
+            json.dump(output_data, f, indent=4)
+        
+        # Atomic move
+        os.rename(temp_file, SAVE_FILE)
+        debug_log(f"Successfully saved delegation data")
+    except Exception as e:
+        debug_log(f"Error saving delegation data: {e}")
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        raise
+
+def main():
+    """Main execution function"""
+    debug_log("Starting DHCPv6 prefix delegation processing")
+    
+    try:
+        # Setup
+        ensure_directories()
+        backup_current_state()
+        
+        # Load existing data
+        existing_pd_data = load_existing_data()
+        
+        # Parse configuration
+        iface_pdids = parse_dhcp6c_config()
+        if not iface_pdids:
+            debug_log("No interfaces found in dhcp6c config")
+            return 1
+        
+        # Process delegations
+        pd_delegations = process_prefix_delegations(iface_pdids, existing_pd_data)
+        
+        # Generate summary and save
+        summary = generate_summary(pd_delegations)
+        save_delegation_data(pd_delegations, summary)
+        
+        debug_log("DHCPv6 prefix delegation processing completed successfully")
+        return 0
+        
+    except Exception as e:
+        debug_log(f"Error during processing: {e}")
+        return 1
+
+if __name__ == "__main__":
+    sys.exit(main())

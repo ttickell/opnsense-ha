@@ -1,0 +1,118 @@
+#!/bin/sh
+
+# IPv6 Connectivity Monitoring Service
+# OPNsense HA Integration Service Definition
+# Version: 1.0 - Phase 3 IPv6 HA Integration
+
+# PROVIDE: ipv6_monitor
+# REQUIRE: netif routing
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="ipv6_monitor"
+rcvar="ipv6_monitor_enable"
+
+load_rc_config $name
+
+# Default configuration
+: ${ipv6_monitor_enable:="NO"}
+: ${ipv6_monitor_pidfile:="/var/run/ipv6-monitor.pid"}
+: ${ipv6_monitor_logfile:="/var/log/ipv6-monitor.log"}
+
+command="/usr/local/bin/ipv6-connectivity-monitor.py"
+command_args="--daemon"
+pidfile="${ipv6_monitor_pidfile}"
+required_files="/usr/local/bin/ipv6-connectivity-monitor.py"
+
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+status_cmd="${name}_status"
+
+ipv6_monitor_start() {
+    if [ -f "${pidfile}" ]; then
+        local pid=$(cat "${pidfile}" 2>/dev/null)
+        if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+            echo "IPv6 monitoring daemon already running (PID: ${pid})"
+            return 0
+        else
+            rm -f "${pidfile}"
+        fi
+    fi
+    
+    echo "Starting IPv6 connectivity monitoring daemon..."
+    
+    # Ensure log directory exists
+    mkdir -p "$(dirname "${ipv6_monitor_logfile}")"
+    
+    # Start daemon
+    daemon -u root -P "${pidfile}" -r -f "${command}" ${command_args}
+    
+    # Wait and verify
+    sleep 2
+    if [ -f "${pidfile}" ]; then
+        local pid=$(cat "${pidfile}" 2>/dev/null)
+        if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+            echo "IPv6 monitoring daemon started successfully (PID: ${pid})"
+            return 0
+        fi
+    fi
+    
+    echo "Failed to start IPv6 monitoring daemon"
+    return 1
+}
+
+ipv6_monitor_stop() {
+    if [ -f "${pidfile}" ]; then
+        local pid=$(cat "${pidfile}" 2>/dev/null)
+        if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+            echo "Stopping IPv6 monitoring daemon (PID: ${pid})..."
+            kill -TERM "${pid}"
+            
+            # Wait for graceful shutdown
+            local count=0
+            while [ ${count} -lt 10 ] && kill -0 "${pid}" 2>/dev/null; do
+                sleep 1
+                count=$((count + 1))
+            done
+            
+            # Force kill if still running
+            if kill -0 "${pid}" 2>/dev/null; then
+                kill -KILL "${pid}"
+            fi
+            
+            rm -f "${pidfile}"
+            echo "IPv6 monitoring daemon stopped"
+            return 0
+        fi
+    fi
+    
+    echo "IPv6 monitoring daemon not running"
+    return 1
+}
+
+ipv6_monitor_status() {
+    if [ -f "${pidfile}" ]; then
+        local pid=$(cat "${pidfile}" 2>/dev/null)
+        if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+            echo "IPv6 monitoring daemon is running (PID: ${pid})"
+            
+            # Show connectivity status if available
+            if [ -x "/usr/local/bin/ipv6-monitor" ]; then
+                echo "Current connectivity status:"
+                /usr/local/bin/ipv6-monitor status 2>/dev/null || echo "  Status check failed"
+            fi
+            
+            return 0
+        else
+            rm -f "${pidfile}"
+            echo "IPv6 monitoring daemon is not running (stale PID file removed)"
+            return 1
+        fi
+    else
+        echo "IPv6 monitoring daemon is not running"
+        return 1
+    fi
+}
+
+run_rc_command "$1"

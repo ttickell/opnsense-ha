@@ -2,7 +2,7 @@
 
 # OPNsense HA Singleton CARP Hook Script
 # Manages interface states, services, and routing based on CARP status
-# Version: 2.8 - Added DHCP lease clearing for cable modem compatibility
+# Version: 3.0 - Phase 3 IPv6 HA Integration (Advanced Connectivity Monitoring)
 #
 # Implementation Notes:
 # - Complete interface management via direct rc.linkup with verification and ifconfig fallback
@@ -14,6 +14,7 @@
 # - Enhanced IPv6 service restart during CARP state transitions
 # - Added route verification and retry logic to ensure failback routing works
 # - Added DHCP lease clearing to address cable modem stale lease issues
+# - IPv6 HA Integration: delegation processing, ULA mapping, state management
 # - Compatible with interface_suspend() patterns used in OPNsense 20-ppp hook
 
 TAG="syshook-carp-ha-singleton"
@@ -36,11 +37,35 @@ ENABLE_ROUTE_MANAGEMENT="yes"
 ENABLE_INTERFACE_RECONFIGURE="yes"
 ENABLE_DHCP_LEASE_CLEARING="yes"        # Clear stale DHCP leases before interface restart
 
+# IPv6 HA Integration Configuration (NEW in v2.8, Enhanced in v2.9)
+ENABLE_IPV6_HA_MANAGEMENT="yes"         # Enable IPv6 HA-specific management
+ENABLE_IPV6_DELEGATION_PROCESSING="yes" # Process IPv6 prefix delegations during CARP transitions
+ENABLE_ULA_MAPPING_MANAGEMENT="yes"     # Manage ULA to delegation mappings
+ENABLE_DYNAMIC_NPTV6="no"              # Dynamic NPTv6 rule management (Phase 3)
+IPV6_ULA_PREFIX="fd03:17ac:e938::/48"   # ULA prefix for internal networks
+IPV6_STATE_DIR="/var/db/ipv6-ha"       # IPv6 HA state directory
+IPV6_DELEGATION_TIMEOUT="30"           # Timeout for IPv6 delegation validation (seconds)
+
+# Phase 2 IPv6 Enhancements (NEW in v2.9)
+ENABLE_IPV6_ROUTER_ADVERTISEMENTS="yes" # Manage radvd service during CARP transitions
+ENABLE_IPV6_DHCP_SERVER="yes"          # Manage DHCPv6 server during CARP transitions
+ENABLE_IPV6_INTERFACE_RECONFIGURE="yes" # Enhanced IPv6 interface reconfiguration
+IPV6_TEST_ADDRESS="2001:4860:4860::8888" # IPv6 connectivity test address (Google DNS)
+IPV6_DELEGATION_REFRESH_INTERVAL="300"  # Refresh delegations every 5 minutes when stale
+
+# Phase 3 IPv6 Advanced Features (NEW in v3.0)
+ENABLE_IPV6_CONNECTIVITY_MONITORING="yes" # Advanced IPv6 connectivity monitoring and health assessment
+IPV6_MONITORING_INTERVAL="30"           # Connectivity check interval in seconds
+IPV6_FAILOVER_THRESHOLD="3"             # Consecutive failures before triggering failover consideration
+
 # Route verification and retry configuration (NEW in v2.7)
 # These settings address ARP resolution issues and timing problems during failback
 ENABLE_ROUTE_VERIFICATION="yes"        # Enable route verification and automatic fixing
 ROUTE_RETRY_COUNT="3"                   # Number of times to retry route operations
 ROUTE_RETRY_DELAY="2"                   # Seconds between route retry attempts
+
+# Interface timing configuration
+INTERFACE_SETTLE_TIME="2"               # Seconds to wait for interface changes to settle
 
 DEBUG="no"
 
@@ -122,6 +147,430 @@ init_system_tunables
 
 logger -p info -t ${TAG} "Processing CARP event: ${INTERFACE} -> ${CARP_STATUS}"
 debug_log "Configuration: WAN_INTS=${WAN_INTS}, IPv6=${ENABLE_IPV6}, Services=${ENABLE_SERVICE_MANAGEMENT}"
+
+# IPv6 HA Management Functions
+ensure_ipv6_state_directory() {
+    if [ "${ENABLE_IPV6_HA_MANAGEMENT}" = "yes" ]; then
+        mkdir -p "${IPV6_STATE_DIR}"
+        chmod 755 "${IPV6_STATE_DIR}"
+        debug_log "Ensured IPv6 state directory exists: ${IPV6_STATE_DIR}"
+    fi
+}
+
+check_ipv6_delegation_file() {
+    local delegation_file="${IPV6_STATE_DIR}/dhcp6c-delegations.json"
+    if [ -f "${delegation_file}" ]; then
+        # Check if file is recent (within refresh interval for active monitoring)
+        local file_age=$(( $(date +%s) - $(stat -f %m "${delegation_file}") ))
+        local max_age=${IPV6_DELEGATION_REFRESH_INTERVAL:-300}  # Default 5 minutes
+        
+        if [ ${file_age} -lt ${max_age} ]; then
+            return 0  # File exists and is recent
+        else
+            debug_log "IPv6 delegation file is stale (age: ${file_age}s, max: ${max_age}s)"
+            return 1
+        fi
+    else
+        debug_log "IPv6 delegation file not found: ${delegation_file}"
+        return 1
+    fi
+}
+
+validate_ipv6_delegations() {
+    if [ "${ENABLE_IPV6_DELEGATION_PROCESSING}" != "yes" ]; then
+        debug_log "IPv6 delegation processing disabled"
+        return 0
+    fi
+    
+    local delegation_file="${IPV6_STATE_DIR}/dhcp6c-delegations.json"
+    logger -p info -t ${TAG} "Validating IPv6 delegations"
+    
+    # Ensure state directory exists
+    ensure_ipv6_state_directory
+    
+    # Check if delegation file exists and is recent
+    if check_ipv6_delegation_file; then
+        logger -p info -t ${TAG} "IPv6 delegations are current"
+        return 0
+    fi
+    
+    # Trigger delegation refresh
+    if [ -x "/usr/local/bin/dhcp6c-prefix-json" ]; then
+        logger -p info -t ${TAG} "Refreshing IPv6 delegation state"
+        if /usr/local/bin/dhcp6c-prefix-json >/dev/null 2>&1; then
+            logger -p info -t ${TAG} "IPv6 delegation refresh completed"
+            return 0
+        else
+            logger -p warning -t ${TAG} "IPv6 delegation refresh failed"
+            return 1
+        fi
+    else
+        logger -p warning -t ${TAG} "IPv6 delegation script not found"
+        return 1
+    fi
+}
+
+trigger_ipv6_ula_mapping_update() {
+    if [ "${ENABLE_ULA_MAPPING_MANAGEMENT}" != "yes" ]; then
+        debug_log "ULA mapping management disabled"
+        return 0
+    fi
+    
+    logger -p info -t ${TAG} "Triggering IPv6 ULA mapping update"
+    
+    if [ -x "/usr/local/bin/dhcp6c-ula-mapping.py" ]; then
+        if /usr/local/bin/dhcp6c-ula-mapping.py >/dev/null 2>&1; then
+            logger -p info -t ${TAG} "IPv6 ULA mapping update completed"
+            return 0
+        else
+            logger -p warning -t ${TAG} "IPv6 ULA mapping update failed"
+            return 1
+        fi
+    else
+        logger -p warning -t ${TAG} "IPv6 ULA mapping script not found"
+        return 1
+    fi
+}
+
+process_ipv6_carp_transition() {
+    if [ "${ENABLE_IPV6_HA_MANAGEMENT}" != "yes" ]; then
+        return 0
+    fi
+    
+    logger -p info -t ${TAG} "Processing IPv6 CARP transition: ${CARP_STATUS}"
+    
+    case "${CARP_STATUS}" in
+        "MASTER")
+            # Enhanced MASTER transition for IPv6
+            validate_ipv6_delegations
+            trigger_ipv6_ula_mapping_update
+            
+            # Manage IPv6-specific services
+            manage_ipv6_router_advertisements
+            manage_ipv6_dhcp_server
+            
+            # Configure IPv6 interfaces with current delegations
+            configure_ipv6_interfaces
+            
+            # Start IPv6 connectivity monitoring (Phase 3 Step 5)
+            manage_ipv6_monitoring
+            ;;
+        "BACKUP")
+            # Enhanced BACKUP transition for IPv6
+            validate_ipv6_delegations
+            
+            # Stop IPv6 services to prevent conflicts
+            manage_ipv6_router_advertisements
+            manage_ipv6_dhcp_server
+            
+            # Deconfigure IPv6 addresses but preserve delegation state
+            deconfigure_ipv6_interfaces
+            
+            # Continue monitoring for failover readiness (Phase 3 Step 5)
+            manage_ipv6_monitoring
+            ;;
+    esac
+}
+
+# Enhanced DHCPv6 delegation refresh function  
+refresh_dhcp6_delegations() {
+    if [ "${ENABLE_IPV6_HA_MANAGEMENT}" != "yes" ]; then
+        return 0
+    fi
+    
+    logger -p info -t ${TAG} "Refreshing DHCPv6 prefix delegations"
+    
+    # Restart DHCPv6 client for each WAN interface with IPv6 enabled
+    for WAN_INT in ${WAN_INTS}; do
+        local opnsense_interface=$(get_opnsense_interface_name "${WAN_INT}")
+        
+        # Check if interface has IPv6 configuration in OPNsense
+        if configctl interface list | grep -q "${opnsense_interface}"; then
+            logger -p info -t ${TAG} "Refreshing DHCPv6 delegation for ${WAN_INT} (${opnsense_interface})"
+            
+            # Stop and restart DHCPv6 client to force fresh delegation request
+            # Note: DHCPv6 client is managed by interface reconfiguration, not direct service control
+            logger -p info -t ${TAG} "Triggering interface reconfiguration to refresh DHCPv6 for ${WAN_INT}"
+            configctl interface newipv6 "${opnsense_interface}" >/dev/null 2>&1 || \
+                logger -p warning -t ${TAG} "Failed to trigger IPv6 reconfiguration for ${WAN_INT}"
+        fi
+    done
+    
+    # Allow time for new delegations to be received
+    sleep 5
+    
+    # Update ULA mappings with refreshed delegations
+    trigger_ipv6_ula_mapping_update
+}
+
+# Enhanced router advertisement management
+manage_ipv6_router_advertisements() {
+    if [ "${ENABLE_IPV6_HA_MANAGEMENT}" != "yes" ] || [ "${ENABLE_IPV6_ROUTER_ADVERTISEMENTS}" != "yes" ]; then
+        return 0
+    fi
+    
+    logger -p info -t ${TAG} "Managing IPv6 router advertisements for CARP status: ${CARP_STATUS}"
+    
+    case "${CARP_STATUS}" in
+        "MASTER")
+            # Enable router advertisements on MASTER
+            logger -p info -t ${TAG} "Enabling IPv6 router advertisements (MASTER)"
+            
+            # Trigger router advertisement daemon reconfiguration 
+            # Note: radvd is managed by OPNsense's radvd_configure_do() function
+            logger -p info -t ${TAG} "Triggering router advertisement daemon reconfiguration"
+            if [ -x "/usr/local/etc/rc.configure_interface" ]; then
+                # Trigger full interface reconfiguration which includes radvd restart
+                /usr/local/etc/rc.configure_interface "${opnsense_interface}" >/dev/null 2>&1 || \
+                    logger -p warning -t ${TAG} "Failed to reconfigure interface for radvd restart"
+            fi
+            
+            # Ensure IPv6 forwarding is enabled for MASTER
+            sysctl net.inet6.ip6.forwarding=1 >/dev/null 2>&1 || true
+            ;;
+        "BACKUP")
+            # Stop router advertisements on BACKUP to prevent conflicts
+            logger -p info -t ${TAG} "Stopping IPv6 router advertisements (BACKUP)"
+            
+            # Stop router advertisement daemon for BACKUP role
+            # Note: radvd is stopped by killing the process directly
+            if [ -f "/var/run/radvd.pid" ]; then
+                logger -p info -t ${TAG} "Stopping router advertisement daemon"
+                kill -TERM $(cat /var/run/radvd.pid) 2>/dev/null || true
+            fi
+            
+            # Disable IPv6 forwarding on BACKUP
+            sysctl net.inet6.ip6.forwarding=0 >/dev/null 2>&1 || true
+            ;;
+    esac
+}
+
+# Enhanced DHCPv6 server management for HA
+manage_ipv6_dhcp_server() {
+    if [ "${ENABLE_IPV6_HA_MANAGEMENT}" != "yes" ] || [ "${ENABLE_IPV6_DHCP_SERVER}" != "yes" ]; then
+        return 0
+    fi
+    
+    logger -p info -t ${TAG} "Managing IPv6 DHCPv6 server for CARP status: ${CARP_STATUS}"
+    
+    case "${CARP_STATUS}" in
+        "MASTER")
+            # Start DHCPv6 server on MASTER with updated delegations
+            logger -p info -t ${TAG} "Starting IPv6 DHCPv6 server (MASTER)"
+            
+            # Start DHCPv6 server using correct OPNsense service management
+            if command -v configctl >/dev/null 2>&1; then
+                # Update DHCPv6 server configuration with current delegations
+                configctl dhcpd6 restart >/dev/null 2>&1 || \
+                    logger -p warning -t ${TAG} "Failed to restart DHCPv6 server"
+            fi
+            ;;
+        "BACKUP")
+            # Stop DHCPv6 server on BACKUP to prevent conflicts
+            logger -p info -t ${TAG} "Stopping IPv6 DHCPv6 server (BACKUP)"
+            
+            # Stop DHCPv6 server using correct OPNsense service management
+            if command -v configctl >/dev/null 2>&1; then
+                configctl dhcpd6 stop >/dev/null 2>&1 || true
+            fi
+            ;;
+    esac
+}
+
+# IPv6 interface configuration management
+configure_ipv6_interfaces() {
+    if [ "${ENABLE_IPV6_HA_MANAGEMENT}" != "yes" ]; then
+        return 0
+    fi
+    
+    logger -p info -t ${TAG} "Configuring IPv6 interfaces for MASTER role"
+    
+    # Configure each WAN interface for IPv6
+    for WAN_INT in ${WAN_INTS}; do
+        local opnsense_interface=$(get_opnsense_interface_name "${WAN_INT}")
+        
+        logger -p info -t ${TAG} "Configuring IPv6 on ${WAN_INT} (${opnsense_interface})"
+        
+        # Trigger IPv6 interface reconfiguration
+        configctl interface newipv6 "${opnsense_interface}" >/dev/null 2>&1 || \
+            logger -p warning -t ${TAG} "Failed to trigger IPv6 reconfiguration for ${WAN_INT}"
+        
+        # Ensure complete interface configuration including DHCPv6 client
+        /usr/local/etc/rc.configure_interface "${opnsense_interface}" >/dev/null 2>&1 || \
+            logger -p warning -t ${TAG} "Failed to fully configure interface ${WAN_INT}"
+    done
+    
+    # Allow time for address assignment and delegation
+    sleep 3
+    
+    # Verify IPv6 connectivity and log status
+    verify_ipv6_connectivity
+}
+
+# IPv6 interface deconfiguration for BACKUP
+deconfigure_ipv6_interfaces() {
+    if [ "${ENABLE_IPV6_HA_MANAGEMENT}" != "yes" ]; then
+        return 0
+    fi
+    
+    logger -p info -t ${TAG} "Deconfiguring IPv6 interfaces for BACKUP role"
+    
+    # Note: We preserve DHCPv6 delegation state but remove active addresses
+    # This allows faster failover when transitioning back to MASTER
+    
+    for WAN_INT in ${WAN_INTS}; do
+        local opnsense_interface=$(get_opnsense_interface_name "${WAN_INT}")
+        
+        logger -p info -t ${TAG} "Deconfiguring IPv6 on ${WAN_INT} (${opnsense_interface})"
+        
+        # Remove IPv6 addresses but keep interface up for monitoring
+        ifconfig "${WAN_INT}" inet6 -autoconf >/dev/null 2>&1 || true
+        
+        # Note: DHCPv6 client is managed by interface configuration, not direct service control
+        # Gracefully remove IPv6 configuration while preserving delegation state
+        logger -p info -t ${TAG} "IPv6 gracefully deconfigured for ${WAN_INT} (delegation state preserved)"
+    done
+}
+
+# IPv6 connectivity verification
+verify_ipv6_connectivity() {
+    if [ "${ENABLE_IPV6_HA_MANAGEMENT}" != "yes" ]; then
+        return 0
+    fi
+    
+    logger -p info -t ${TAG} "Verifying IPv6 connectivity"
+    
+    # Check for IPv6 default route
+    if netstat -rn -f inet6 | grep -q "^default"; then
+        logger -p info -t ${TAG} "IPv6 default route present"
+        
+        # Test basic IPv6 connectivity if test address is configured
+        if [ -n "${IPV6_TEST_ADDRESS:-}" ]; then
+            if ping6 -c 1 -W 3000 "${IPV6_TEST_ADDRESS}" >/dev/null 2>&1; then
+                logger -p info -t ${TAG} "IPv6 connectivity test successful"
+            else
+                logger -p warning -t ${TAG} "IPv6 connectivity test failed"
+            fi
+        fi
+    else
+        logger -p warning -t ${TAG} "No IPv6 default route found"
+    fi
+}
+
+# Advanced IPv6 connectivity monitoring (Phase 3 Step 5)
+start_ipv6_monitoring() {
+    if [ "${ENABLE_IPV6_CONNECTIVITY_MONITORING}" != "yes" ]; then
+        return 0
+    fi
+    
+    logger -p info -t ${TAG} "Starting IPv6 connectivity monitoring"
+    
+    if [ -x "/usr/local/bin/ipv6-monitor" ]; then
+        # Start monitoring daemon for continuous connectivity tracking
+        /usr/local/bin/ipv6-monitor start >/dev/null 2>&1 || \
+            logger -p warning -t ${TAG} "Failed to start IPv6 monitoring daemon"
+    else
+        logger -p warning -t ${TAG} "IPv6 monitoring script not found"
+    fi
+}
+
+stop_ipv6_monitoring() {
+    if [ "${ENABLE_IPV6_CONNECTIVITY_MONITORING}" != "yes" ]; then
+        return 0
+    fi
+    
+    logger -p info -t ${TAG} "Stopping IPv6 connectivity monitoring"
+    
+    if [ -x "/usr/local/bin/ipv6-monitor" ]; then
+        /usr/local/bin/ipv6-monitor stop >/dev/null 2>&1 || true
+    fi
+}
+
+check_ipv6_connectivity_status() {
+    if [ "${ENABLE_IPV6_CONNECTIVITY_MONITORING}" != "yes" ]; then
+        return 0
+    fi
+    
+    if [ -x "/usr/local/bin/ipv6-monitor" ]; then
+        # Get detailed connectivity status
+        local status_output=$(/usr/local/bin/ipv6-monitor status 2>/dev/null)
+        local exit_code=$?
+        
+        if [ ${exit_code} -eq 0 ]; then
+            logger -p info -t ${TAG} "IPv6 connectivity monitoring: HEALTHY"
+            return 0
+        else
+            logger -p warning -t ${TAG} "IPv6 connectivity monitoring: DEGRADED"
+            return 1
+        fi
+    else
+        logger -p warning -t ${TAG} "IPv6 monitoring not available"
+        return 1
+    fi
+}
+
+# IPv6 monitoring integration for CARP transitions
+manage_ipv6_monitoring() {
+    if [ "${ENABLE_IPV6_CONNECTIVITY_MONITORING}" != "yes" ]; then
+        return 0
+    fi
+    
+    logger -p info -t ${TAG} "Managing IPv6 monitoring for CARP status: ${CARP_STATUS}"
+    
+    case "${CARP_STATUS}" in
+        "MASTER")
+            # Start comprehensive monitoring on MASTER
+            start_ipv6_monitoring
+            
+            # Perform immediate connectivity check
+            if check_ipv6_connectivity_status; then
+                logger -p info -t ${TAG} "IPv6 connectivity verified for MASTER role"
+            else
+                logger -p warning -t ${TAG} "IPv6 connectivity issues detected on MASTER"
+            fi
+            ;;
+        "BACKUP")
+            # Continue monitoring on BACKUP but with reduced frequency
+            # This helps with failover decision making
+            if [ -x "/usr/local/bin/ipv6-monitor" ]; then
+                if /usr/local/bin/ipv6-monitor is-running | grep -q "running"; then
+                    logger -p info -t ${TAG} "IPv6 monitoring continues on BACKUP for failover readiness"
+                else
+                    # Start monitoring even on BACKUP for failover decision support
+                    start_ipv6_monitoring
+                fi
+            fi
+            ;;
+    esac
+}
+
+# IPv6 health assessment for failover decisions
+assess_ipv6_health() {
+    if [ "${ENABLE_IPV6_CONNECTIVITY_MONITORING}" != "yes" ]; then
+        return 0  # Assume healthy if monitoring disabled
+    fi
+    
+    if [ -x "/usr/local/bin/ipv6-monitor" ]; then
+        # Run immediate connectivity check
+        /usr/local/bin/ipv6-monitor check >/dev/null 2>&1
+        local check_result=$?
+        
+        # Get current status
+        local status_result=0
+        /usr/local/bin/ipv6-monitor status >/dev/null 2>&1 || status_result=$?
+        
+        if [ ${check_result} -eq 0 ] && [ ${status_result} -eq 0 ]; then
+            debug_log "IPv6 health assessment: HEALTHY"
+            return 0
+        else
+            debug_log "IPv6 health assessment: DEGRADED"
+            return 1
+        fi
+    else
+        debug_log "IPv6 health assessment: MONITORING_UNAVAILABLE"
+        return 0  # Don't fail if monitoring not available
+    fi
+}
 
 # Interface management functions
 get_interface_status() {
@@ -233,11 +682,25 @@ manage_wan_interfaces() {
                         local opnsense_interface=$(get_opnsense_interface_name "${WAN_INT}")
                         logger -p info -t ${TAG} "Triggering interface reconfiguration for ${WAN_INT} (${opnsense_interface})"
                         
+                        # IPv4 reconfiguration
                         if ! /usr/local/etc/rc.configure_interface "${opnsense_interface}" >/dev/null 2>&1; then
                             logger -p warning -t ${TAG} "interface reconfigure failed, triggering newip event"
                             # Fallback: trigger newip event to restore DHCP lease and routes
                             /usr/local/etc/rc.newwanip "${opnsense_interface}" force >/dev/null 2>&1 || \
                                 logger -p warning -t ${TAG} "Failed to trigger newip event for ${WAN_INT}"
+                        fi
+                        
+                        # IPv6 reconfiguration (Phase 2 Step 4 enhancement)
+                        if [ "${ENABLE_IPV6_HA_MANAGEMENT}" = "yes" ] && [ "${ENABLE_IPV6_INTERFACE_RECONFIGURE}" = "yes" ]; then
+                            logger -p info -t ${TAG} "Triggering IPv6 reconfiguration for ${WAN_INT} (${opnsense_interface})"
+                            
+                            # Trigger IPv6 address assignment and prefix delegation
+                            configctl interface newipv6 "${opnsense_interface}" >/dev/null 2>&1 || \
+                                logger -p warning -t ${TAG} "Failed to trigger IPv6 reconfiguration for ${WAN_INT}"
+                            
+                            # Restart DHCPv6 client for fresh delegation via interface reconfiguration
+                            /usr/local/etc/rc.configure_interface "${opnsense_interface}" >/dev/null 2>&1 || \
+                                logger -p warning -t ${TAG} "Failed to reconfigure interface for DHCPv6 restart on ${WAN_INT}"
                         fi
                     else
                         debug_log "Interface reconfiguration disabled, skipping DHCP renewal"
@@ -250,9 +713,22 @@ manage_wan_interfaces() {
                         # Clear stale leases before renewal for clean MASTER state
                         clear_dhcp_leases
                         
-                        # Trigger lease renewal to establish fresh DHCP state
+                        # Trigger IPv4 lease renewal to establish fresh DHCP state
                         configctl interface newip "${opnsense_interface}" >/dev/null 2>&1 || \
                             logger -p warning -t ${TAG} "Failed to trigger DHCP renewal for ${WAN_INT}"
+                        
+                        # IPv6 renewal and delegation refresh (Phase 2 Step 4 enhancement)
+                        if [ "${ENABLE_IPV6_HA_MANAGEMENT}" = "yes" ] && [ "${ENABLE_IPV6_INTERFACE_RECONFIGURE}" = "yes" ]; then
+                            logger -p info -t ${TAG} "Refreshing IPv6 configuration for ${WAN_INT} (${opnsense_interface})"
+                            
+                            # Refresh IPv6 configuration and delegations
+                            configctl interface newipv6 "${opnsense_interface}" >/dev/null 2>&1 || \
+                                logger -p warning -t ${TAG} "Failed to refresh IPv6 configuration for ${WAN_INT}"
+                            
+                            # Refresh DHCPv6 delegations via interface reconfiguration
+                            /usr/local/etc/rc.configure_interface "${opnsense_interface}" >/dev/null 2>&1 || \
+                                logger -p warning -t ${TAG} "Failed to reconfigure interface for DHCPv6 refresh on ${WAN_INT}"
+                        fi
                     else
                         debug_log "${WAN_INT} already UP, no action needed"
                     fi
@@ -755,6 +1231,14 @@ perform_health_checks() {
                 logger -p warning -t ${TAG} "Master node has interface ${WAN_INT} down"
             fi
         done
+        
+        # IPv6 health assessment for MASTER (Phase 3 Step 5)
+        if [ "${ENABLE_IPV6_HA_MANAGEMENT}" = "yes" ]; then
+            if ! assess_ipv6_health; then
+                logger -p warning -t ${TAG} "IPv6 connectivity health check failed on MASTER"
+                # Note: Don't fail completely, just log the warning
+            fi
+        fi
     fi
     
     return ${exit_code}
@@ -780,6 +1264,10 @@ main() {
     
     manage_services
     manage_routes
+    
+    # Process IPv6 HA management (NEW in v2.8)
+    process_ipv6_carp_transition
+    
     trigger_ipv6_updates
     
     # Update CARP service status (OPNsense HA health monitoring integration)
