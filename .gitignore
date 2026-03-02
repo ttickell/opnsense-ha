@@ -209,3 +209,6 @@ __marimo__/
 # Production configuration files
 # Contains real firewall configuration details that should not be committed
 real/
+
+# Credentials and secrets
+.env
