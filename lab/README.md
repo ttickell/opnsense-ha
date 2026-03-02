@@ -4,13 +4,29 @@ A fully virtual lab for testing CARP-based HA failover, including realistic simu
 
 ---
 
+## Phases
+
+| Phase | Scope | Status |
+|---|---|---|
+| **Phase 1** | Isolated lab — CARP/HA + DHCPv6-PD testing with no internet access | Designed; ready to build |
+| **Phase 2** | Internet-connected lab — lab-uplink VLAN, real firewall integration, end-to-end NPTv6 | Future |
+
+This document covers Phase 1 in full. See [Phase 2 (Future)](#phase-2-future) for the planned extension.
+
+---
+
 ## Design Goals
 
+### Phase 1
 1. **Faithful ISP simulation** — The simulated WAN segments mimic how Xfinity and AT&T actually hand out IPv4 and IPv6 addressing (single DHCP IPv4 address; DHCPv6-PD with two /60s for Xfinity; drip-fed /64s for AT&T). See [ISP Delegation Behavior](#isp-delegation-behavior) for detail.
 2. **Shared ULA space** — IPv6 uses the `fd03:17ac:e938:4000::/50` block earmarked in [opnsense-ipv6/GeneralNotes.md](../opnsense-ipv6/GeneralNotes.md) for test net delegations. This keeps the lab within the same ULA /48 as production without conflicting with any production subnet.
 3. **Self-contained on Proxmox** — All VLANs are scoped to a single VLAN-aware Proxmox bridge. No physical switch reconfiguration is needed, though moving to physical switch VLANs is a straightforward future step.
 4. **Console-accessible client** — A client LXC on the lab LAN is reachable via the Proxmox GUI console without needing SSH or a production network route.
 5. **Mirror production HA structure** — Two OPNsense VMs with the same `ha-singleton` scripts and configuration structure as the production pair.
+
+### Phase 2
+6. **Real internet routing** — Lab firewalls have a path to the internet via a lab-uplink VLAN connected to the production firewall. Enables end-to-end NPTv6 and real DHCP lease renewal testing.
+7. **Physical switch migration** — VLANs 210-214 move from internal Proxmox bridge to physical switch ports, mirroring the production topology more closely.
 
 ---
 
@@ -144,6 +160,108 @@ See [isp-simulators/att/dnsmasq.conf](isp-simulators/att/dnsmasq.conf).
 
 ---
 
+## Phase 1 Task List
+
+A sequenced checklist for building the isolated lab. Tasks are grouped by dependency order — complete each group before the next.
+
+### Group 1 — Proxmox Prerequisites
+
+- [ ] **1.1** Confirm Proxmox node name and API endpoint (needed for automation)
+- [ ] **1.2** Download Alpine Linux LXC template (latest `alpine-3.x-default`) via Proxmox storage
+- [ ] **1.3** Download Debian LXC template (latest `debian-12-standard`) via Proxmox storage
+- [ ] **1.4** Download OPNsense ISO and upload to Proxmox ISO storage
+  - Source: https://opnsense.org/download/ — select `dvd`, `amd64`
+  - Filename pattern: `OPNsense-<version>-dvd-amd64.iso`
+- [ ] **1.5** Create the `vmbr-lab` VLAN-aware bridge on the Proxmox host (see [Proxmox Setup → Step 1](#1-create-the-lab-bridge))
+  - `bridge_ports none` (fully internal — no physical NIC required)
+  - VLAN-aware: yes
+  - Apply with `ifreload -a`
+
+### Group 2 — ISP Simulator LXCs
+
+- [ ] **2.1** Create `lab-isp-xfinity` LXC (Alpine, 1 vCPU, 256 MB RAM, 2 GB disk)
+  - NIC: `vmbr-lab`, VLAN tag 210, untagged inside container
+  - Static IP: `10.220.10.1/30`, `fd03:17ac:e938:4000::1/64`
+  - No firewall
+- [ ] **2.2** Create `lab-isp-att` LXC (Alpine, 1 vCPU, 256 MB RAM, 2 GB disk)
+  - NIC: `vmbr-lab`, VLAN tag 211, untagged inside container
+  - Static IP: `10.220.11.1/30`, `fd03:17ac:e938:4100::1/64`
+  - No firewall
+- [ ] **2.3** On `lab-isp-xfinity`: run `lab/isp-simulators/setup.sh` and copy `lab/isp-simulators/xfinity/dnsmasq.conf` to `/etc/dnsmasq.conf`
+- [ ] **2.4** On `lab-isp-att`: run `lab/isp-simulators/setup.sh` and copy `lab/isp-simulators/att/dnsmasq.conf` to `/etc/dnsmasq.conf`
+- [ ] **2.5** Verify dnsmasq is listening on each simulator: `netstat -ulnp | grep 67`
+  - If DHCPv6-PD via dnsmasq fails (version incompatibility), fall back to the `dhcpd6` config blocks in the comments of each `dnsmasq.conf`
+
+### Group 3 — Firewall VMs
+
+- [ ] **3.1** Create `lab-fw-primary` VM (2 vCPU, 2 GB RAM, 8 GB disk, OPNsense ISO)
+  - vtnet0: `vmbr-lab`, VLAN 210 — WAN (Xfinity)
+  - vtnet1: `vmbr-lab`, VLAN 211 — WAN2 (AT&T)
+  - vtnet2: `vmbr-lab`, VLAN 212 — LAN
+  - vtnet3: `vmbr-lab`, VLAN 213 — PFSYNC
+- [ ] **3.2** Create `lab-fw-secondary` VM (same spec)
+  - NIC assignments identical to primary (same VLANs, same roles)
+- [ ] **3.3** Record the auto-assigned MAC addresses for vtnet0 and vtnet1 on `lab-fw-primary`
+- [ ] **3.4** On `lab-fw-secondary`, set vtnet0 MAC = primary's vtnet0 MAC; set vtnet1 MAC = primary's vtnet1 MAC
+  - This is mandatory — ISP simulators bind DHCP leases to MAC
+- [ ] **3.5** Install OPNsense on both VMs via console (boot from ISO, follow installer, assign interfaces)
+  - vtnet0 → WAN, vtnet1 → WAN2, vtnet2 → LAN, vtnet3 → no assignment (used directly for PFSYNC)
+  - LAN: `10.220.1.2/24` (primary), `10.220.1.3/24` (secondary)
+  - PFSYNC: `10.220.3.1/30` (primary), `10.220.3.2/30` (secondary)
+- [ ] **3.6** Configure CARP in OPNsense GUI on both nodes (VIP `10.220.1.1`, VHID 1)
+- [ ] **3.7** Configure PFSYNC in OPNsense GUI; verify `pfctl -s References` shows sync active
+- [ ] **3.8** On `lab-fw-primary`: install `ha-singleton` scripts via `setup-firewall`:
+  ```bash
+  ./setup-firewall "vtnet0 vtnet1"
+  ```
+- [ ] **3.9** Copy `lab/firewall-configs/ha-singleton-primary.conf` to `/usr/local/etc/ha-singleton.conf` on `lab-fw-primary`
+- [ ] **3.10** Repeat steps 3.8–3.9 on `lab-fw-secondary` using `ha-singleton-secondary.conf`
+- [ ] **3.11** Copy DHCPv6 DUID from primary to secondary:
+  ```bash
+  # On lab-fw-primary
+  cat /var/db/dhcp6c_duid    # note the value
+  # On lab-fw-secondary
+  cp /var/db/dhcp6c_duid /var/db/dhcp6c_duid.bak
+  # replace with primary's value
+  ```
+  > Do this only after primary has made at least one successful DHCPv6 exchange with the Xfinity simulator.
+
+### Group 4 — Client LXC
+
+- [ ] **4.1** Create `lab-client` LXC (Debian, 1 vCPU, 512 MB RAM, 4 GB disk)
+  - NIC: `vmbr-lab`, VLAN 212, untagged inside container
+  - DHCP for both IPv4 and IPv6 (gets address from lab firewall)
+  - No firewall
+
+### Group 5 — Smoke Tests
+
+- [ ] **5.1** From `lab-client` console: `ping -c 3 10.220.1.1` — should reach CARP VIP
+- [ ] **5.2** From `lab-client` console: `ip -6 addr` — should show a GUA from the delegated prefix
+- [ ] **5.3** Trigger primary→secondary failover:
+  ```bash
+  # On lab-fw-primary console
+  ifconfig carp0 down
+  ```
+- [ ] **5.4** Verify `lab-fw-secondary` logs show MASTER transition:
+  ```bash
+  tail -f /var/log/system.log | grep "syshook-carp"
+  ```
+- [ ] **5.5** From `lab-client` console: `ping -c 3 10.220.1.1` — should recover within ~5 seconds
+- [ ] **5.6** Restore primary to MASTER:
+  ```bash
+  # On lab-fw-primary console
+  ifconfig carp0 up
+  ```
+- [ ] **5.7** Verify PFSYNC state table is syncing: `pfctl -s state | wc -l` on both nodes should be comparable
+
+---
+
+## Reference
+
+The sections below are detailed setup reference supporting the task list above.
+
+---
+
 ## Proxmox Setup
 
 ### 1. Create the lab bridge
@@ -270,13 +388,27 @@ cat /var/db/ipv6-ha/dhcp6c-delegations.json
 
 ---
 
-## Future: Physical Switch VLANs
+## Phase 2 (Future)
 
-To move the lab to physical switch-backed VLANs (so the lab firewalls are on real switch ports instead of virtual bridges):
+Phase 2 extends the lab with a real internet path and physical switch backing. It has two independent sub-goals that can be done in either order.
+
+### 2A — Internet Access via Lab-Uplink
+
+Adds a VLAN 214 `lab-uplink` segment connecting the lab firewall pair to the production firewall:
+
+- VLAN 214: `10.220.0.0/30` — production FW: `.1`; lab FW CARP VIP: `.2`
+- Changes on production FW: static route for `10.220.1.0/24` (lab LAN) via `10.220.0.2`; firewall rule permitting lab LAN → internet (block lab LAN → production LAN)
+- Changes on lab FW VMs: add a 5th NIC on `vmbr-lab`, VLAN 214 — this interface must **not** appear in `WAN_INTS`; add default route to `10.220.0.1`
+- IPv6: static route on production FW for `fd03:17ac:e938:4200::/56` via lab FW VIP
+- Enables: real DHCP lease renewal testing, NPTv6 end-to-end, `ping 8.8.8.8` from `lab-client`
+
+### 2B — Physical Switch VLANs
+
+Moves VLANs 210-213 from the internal `vmbr-lab` bridge to physical switch ports:
 
 1. Configure VLANs 210-213 on the physical switch.
 2. Assign a trunk port from the switch to the Proxmox host.
 3. Change `bridge_ports none` to `bridge_ports <trunk_nic>` in the `vmbr-lab` config.
-4. Move the ISP simulator LXCs to LXCs with passthrough to a physical switch port in the appropriate VLAN (or keep them virtual — the ISP simulators don't need physical connectivity).
+4. ISP simulator LXCs can optionally be moved to physical ports in their respective VLANs, or left virtual.
 
-The firewall VMs and their network configs require no changes.
+The firewall VMs and their `ha-singleton.conf` configs require no changes for this migration.
