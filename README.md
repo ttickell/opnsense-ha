@@ -124,6 +124,79 @@ Before running `setup-firewall`, confirm all of the following:
 - [ ] Both nodes: No CARP VIPs assigned to WAN interfaces
 - [ ] Config file: Every WAN device listed in both `WAN_INTS` and `WAN_INTERFACE_MAP`
 
+## Physical Deployment Topology
+
+### Design Principles
+
+The physical plant is designed for survivability by someone who may not be deeply familiar with the configuration — including remote hardware replacement when you are not on-site:
+
+1. **Direct-cable operation must always work.** Port 1 → ISP modem. Port 2 → LAN switch. A replacement firewall cabled identically and restored from config must be online within minutes, with no switch reconfiguration required.
+2. **The primary LAN (VLAN 1 / untagged) must just work.** The internal network runs on untagged Ethernet so it survives switch replacements, generic switches, and any scenario where VLAN trunking is not configured. Any device plugged into the LAN switch must get connectivity without VLAN knowledge.
+3. **WAN isolation via VLANs is required.** Each ISP modem connection is isolated to its own dedicated VLAN segment. The only members of each WAN VLAN are the ISP modem and the firewall interface serving that WAN. This prevents cross-ISP traffic and eliminates address conflicts between providers.
+4. **Physical ports are clearly labeled.** Ports and cables must be labeled by function (WAN1/ISP-A, WAN2/ISP-B, LAN, PFSYNC) to enable a non-expert to complete hardware replacement by following labels alone.
+
+### Current Production Physical Plant
+
+#### Primary Firewall (Physical Hardware)
+
+The primary node is a physical OPNsense appliance with dedicated interface ports per function:
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Physical Firewall (Primary)                        │
+│                                                     │
+│  igc0 ──► [isolated switch VLAN: ISP-A modem only] ├─► Xfinity modem
+│  igc1 ──► [isolated switch VLAN: ISP-B modem only] ├─► AT&T modem
+│  lagg0 ─► [untagged VLAN 1 / LAN switch]           ├─► Internal switch
+│  vlan0.110 ────────────────────────────────────────► PFSYNC to secondary
+└─────────────────────────────────────────────────────┘
+```
+
+- WAN interfaces connect to **physical switch ports configured in isolated, single-purpose VLANs** (only the modem and the firewall port are members).
+- The LAN interface is on **untagged VLAN 1** — no VLAN configuration required on the LAN switch for basic connectivity.
+- WAN VLAN membership is enforced at the switch, so the firewall's physical ports behave like direct connections to each modem.
+
+#### Secondary Firewall (Proxmox VM)
+
+The secondary node runs as a virtual machine on a Proxmox host. It cannot have dedicated physical ports to each modem — instead, the Proxmox host carries all WAN VLANs on a single **tagged trunk NIC**, and the VM sees them as VLAN sub-interfaces:
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Proxmox Host                                       │
+│                                                     │
+│  em0 (trunk) ─┬─ VLAN tag ISP-A ──────────────────►┐│
+│               ├─ VLAN tag ISP-B ──────────────────►││  Virtual
+│               └─ VLAN tag PFSYNC ─────────────────►││  Firewall
+│                                                     ││  (Secondary)
+│  vtnet0 (untagged LAN) ───────────────────────────►┘│
+└─────────────────────────────────────────────────────┘
+```
+
+- WAN interfaces are **VLAN sub-interfaces on a trunk** (e.g., `vtnet4` and `vtnet5` as presented inside the VM).
+- The LAN interface is untagged, same principle as the physical node.
+- VLAN tagging for the WAN interfaces is handled by the Proxmox virtual switch / bridge configuration.
+
+### Asymmetry Between Nodes
+
+| | Primary (Physical) | Secondary (Proxmox VM) |
+|---|---|---|
+| WAN connectivity | Physical ports in isolated switch VLANs | VLAN sub-interfaces on trunk NIC |
+| LAN connectivity | Physical port, untagged | Virtual NIC, untagged |
+| PFSYNC | VLAN sub-interface | VLAN sub-interface on trunk |
+| WAN device names | `igc0`, `igc1` | `vtnet4`, `vtnet5` |
+
+This asymmetry is expected and supported. Each node has its own `ha-singleton.conf` with the correct device names for its physical/virtual environment.
+
+### Hardware Replacement Guidance
+
+If the primary firewall must be replaced while you are remote:
+
+1. Install OPNsense on the replacement hardware.
+2. Cable by port label: **WAN1 → Xfinity modem**, **WAN2 → AT&T modem**, **LAN → switch**, **PFSYNC → Proxmox host**.
+3. Restore from config backup (or manually apply interface assignments to match labels).
+4. Set MAC address cloning on both WAN interfaces to match the original primary (see [WAN Interface Prerequisites](#wan-interface-prerequisites)).
+5. The Proxmox secondary is already active as MASTER; it will remain MASTER until the primary returns, at which point CARP non-preemptive behavior keeps the secondary active until an explicit failback.
+
 ## Quick Start
 
 ### Automated Installation with setup-firewall

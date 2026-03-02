@@ -173,6 +173,27 @@ Sourced by `00-ha-singleton` at runtime. Every variable has a default inside the
 
 ---
 
+## Production Physical Plant
+
+The production HA pair is **asymmetric** — the two nodes use different hardware and connect to the modems differently:
+
+| | Primary | Secondary |
+|---|---|---|
+| Hardware | Physical OPNsense appliance | Proxmox VM |
+| WAN connectivity | Dedicated physical ports in isolated access switch VLANs (one port per ISP) | VLAN sub-interfaces on a tagged trunk NIC on the Proxmox host |
+| LAN | Physical port, untagged (VLAN 1) | Virtual NIC, untagged (VLAN 1) |
+| WAN device names | `igc0`, `igc1` | `vtnet4`, `vtnet5` |
+| Config file | `real/ha-singleton-primary.conf` | `real/ha-singleton-secondary.conf` |
+
+### Key physical-plant constraints
+
+- **Untagged LAN is non-negotiable.** The primary internal network must run on untagged VLAN 1 so it works with any switch and survives hardware replacement without switch reconfiguration.
+- **VLAN isolation per WAN is required.** Each ISP modem is isolated in its own VLAN containing only the modem and the firewall port. This is enforced at the switch/Proxmox bridge layer, not in OPNsense config.
+- **Port labeling must be maintained.** Ports must be labeled WAN1, WAN2, LAN, PFSYNC so a hardware replacement by a non-expert is possible by following labels alone. See README.md → *Hardware Replacement Guidance*.
+- **Config files differ per node by design.** The HA scripts are hardware-agnostic; only `ha-singleton.conf` contains node-specific device names.
+
+---
+
 ## Real vs Test Environments
 
 | Directory | Purpose |
@@ -198,8 +219,10 @@ The `real/` directory is excluded from version control via `.gitignore`. Product
 | Task | Read first |
 |---|---|
 | Understanding failover flow | README.md → Key Features; `00-ha-singleton` script |
+| Physical plant / deployment topology | README.md → Physical Deployment Topology; [docs/NETWORK-TOPOLOGY.md](../docs/NETWORK-TOPOLOGY.md) → Production Deployment Topology |
 | Network addressing / IP layout | [docs/NETWORK-TOPOLOGY.md](../docs/NETWORK-TOPOLOGY.md) |
 | WAN setup checklist | README.md → WAN Interface Prerequisites |
+| Hardware replacement procedure | README.md → Hardware Replacement Guidance |
 | Debugging `configctl` errors | [docs/HOW_TO_DEBUG.md](../docs/HOW_TO_DEBUG.md) |
 | IPv6 prefix delegation / NPTv6 | [docs/IPV6_Integration.md](../docs/IPV6_Integration.md); `opnsense-ipv6/` submodule |
 | Production site config | [docs/Goal.md](../docs/Goal.md); `real/` (local only) |

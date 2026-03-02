@@ -1,5 +1,45 @@
 # OPNsense HA Project - Network Topology Documentation
 
+## Production Deployment Topology
+
+### Physical Plant Overview
+
+The production HA pair consists of one physical appliance (primary) and one Proxmox-hosted VM (secondary). The two nodes connect to the ISP modems differently due to their hardware constraints, but present identical logical interfaces to the HA scripts.
+
+#### Primary Firewall — Physical Appliance
+
+Each ISP modem connects to a dedicated physical port. Those ports are assigned to **isolated, single-member VLANs** on the access switch — the only devices in each WAN VLAN are the modem and the firewall port. This ensures no cross-ISP traffic and makes each WAN segment behave like a direct cable from the firewall to the modem.
+
+```
+Physical Firewall
+  igc0  ──► Access switch (VLAN ISP-A only) ──► Xfinity modem
+  igc1  ──► Access switch (VLAN ISP-B only) ──► AT&T modem
+  lagg0 ──► LAN switch (untagged / VLAN 1)
+  vlan0.110 ──► PFSYNC segment
+```
+
+#### Secondary Firewall — Proxmox VM
+
+The Proxmox host carries all WAN VLANs on a single tagged trunk NIC. The VM sees each WAN as a separate VLAN sub-interface. The LAN and PFSYNC are handled via additional virtual NICs.
+
+```
+Proxmox host NIC (trunk)
+  VLAN tag ISP-A ──► vtnet4 (inside VM)
+  VLAN tag ISP-B ──► vtnet5 (inside VM)
+  VLAN tag PFSYNC ──► vtnet6 (inside VM)
+Proxmox host NIC (untagged LAN)
+  vtnet0 ──► LAN (inside VM)
+```
+
+### Design Rules
+
+1. **Untagged LAN (VLAN 1) must work without VLAN configuration.** The primary internal network runs on untagged Ethernet so any generic switch provides LAN connectivity. No VLAN-aware switch is required for basic operation.
+2. **WAN isolation is enforced at the switch/bridge layer.** Only the modem and the firewall interface are members of each WAN VLAN. This is not an OPNsense config — it is a switch/Proxmox bridge config that must be maintained independently.
+3. **Direct-cable operation is always valid.** Port labels (WAN1, WAN2, LAN, PFSYNC) are sufficient for hardware replacement. A correctly cabled replacement unit with a restored config must function without additional switch reconfiguration.
+4. **Each node has its own conf file** with device names matching its hardware (`igc0`/`igc1` on physical; `vtnet4`/`vtnet5` on VM). The HA scripts are hardware-agnostic — only the config file differs.
+
+---
+
 ## Test Environment Network Configuration
 
 ### Network Segments
