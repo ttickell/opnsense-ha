@@ -215,6 +215,26 @@ The `real/` directory is excluded from version control via `.gitignore`. Product
 
 ---
 
+## Proxmox Environment
+
+The Proxmox cluster has two nodes: `proxima` (31 GB RAM, primary lab target) and `toliman` (7 GB RAM). Both use **Open vSwitch (OVSBridge `vmbr0`)** — not standard Linux bridges.
+
+### Protected VMs — do not modify
+
+| VMID | Name | Node | Why protected |
+|---|---|---|---|
+| 100 | `router-b` | proxima | Reference implementation of the production HA failover pair. Preserved for comparison and rollback reference. |
+
+### Lab VM allocation
+
+Lab VMs use VMID 110+ on `proxima`, VLANs 210-213 on `vmbr0`. See `lab/` for full design.
+
+### Credentials
+
+Proxmox API credentials are stored in `.env` (gitignored). Load with `source .env` before making API calls.
+
+---
+
 ## Documentation Conventions
 
 - **README.md** is the user-facing entry point. Keep it current with every feature change.

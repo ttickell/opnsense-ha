@@ -176,6 +176,9 @@ A sequenced checklist for building the isolated lab. Tasks are grouped by depend
   - Both nodes use OVS (`vmbr0`); lab VMs attach directly to `vmbr0` with VLAN tags 210-213
   - No new bridge required
 
+> **Do not touch VMID 100 (`router-b`) on `proxima`.**
+> This VM is the reference implementation of the production HA failover configuration. It must not be modified, cloned from, or deleted. All lab VMs use VMID 110+.
+
 ### Group 2 — ISP Simulator LXCs
 
 - [ ] **2.1** Create `lab-isp-xfinity` LXC (Alpine, 1 vCPU, 256 MB RAM, 2 GB disk)
