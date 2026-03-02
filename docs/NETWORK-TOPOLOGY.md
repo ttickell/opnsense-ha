@@ -61,11 +61,30 @@
 
 ### Key Configuration Points
 
-1. **MAC Address Cloning**: Both firewalls' WAN interfaces use identical MAC addresses
-2. **DHCP DUID**: Both firewalls use same DHCP DUID for IPv6
-3. **Single Active WAN**: Only the MASTER node has an active WAN connection
-4. **LAN Connectivity**: BACKUP node maintains LAN connectivity via MASTER node
-5. **Private IPv6**: Static IPv6 configuration since using private addressing
+#### 1. MAC Address Cloning ⚠️ Required
+Both firewalls' WAN interfaces must present **identical MAC addresses** to the upstream network. ISPs and upstream routers bind DHCP leases to MAC addresses — if the BACKUP node brings up its WAN with a different MAC after failover, the upstream router will not hand over the existing lease. The result is a connectivity gap lasting minutes to hours until the old lease expires.
+
+Configure in OPNsense GUI: `Interfaces → [WAN] → MAC address` — set the same value on both nodes. Verify with `ifconfig <wan_device> | grep ether` on both nodes.
+
+#### 2. Matching DHCPv6 DUID ⚠️ Required for IPv6
+Both firewalls must use the **same DHCPv6 DUID** for prefix delegation. DHCPv6 servers bind prefix delegations to the DUID, not the MAC. A mismatched DUID on the BACKUP node means it will receive a different or no prefix delegation on failover, breaking all downstream IPv6 addressing that depends on the delegated prefix.
+
+Copy the DUID from the primary node (`cat /var/db/dhcp6c_duid`) and write the identical value to the same path on the secondary. Also set it explicitly under `Interfaces → [WAN] → DHCPv6 client → DUID` in the GUI on both nodes.
+
+#### 3. Single Active WAN
+Only the MASTER node has an active WAN connection. The `00-ha-singleton` hook script explicitly brings WAN interfaces **down** on BACKUP transitions and **up** on MASTER transitions. This prevents IP conflicts when both nodes are live simultaneously.
+
+#### 4. DHCP-Based WAN Addressing
+WAN interfaces must use DHCP (not static) for IPv4. The DHCP renewal path (`configctl interface reconfigure` / `configctl interface newip`) that restores default routes during a MASTER transition does not apply to statically addressed interfaces.
+
+#### 5. LAN Connectivity for BACKUP Node
+The BACKUP node maintains internet connectivity by routing through the MASTER node's LAN IP (`ALT_DEFROUTE_IPV4` / `ALT_DEFROUTE_IPV6` in the config). This route is injected on BACKUP transitions and removed when the node becomes MASTER.
+
+#### 6. No CARP VIPs on WAN
+CARPVirtual IPs must not be placed on WAN interfaces. WAN ownership is managed by the script's up/down logic. CARP VIPs are used only on LAN/internal interfaces.
+
+#### 7. Private IPv6
+Static IPv6 configuration is used in the test environment since it uses private (ULA) addressing rather than provider-delegated public prefixes.
 
 ### Test Scenarios
 

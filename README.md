@@ -29,6 +29,101 @@ This project provides automated failover management for OPNsense firewalls with 
 - **Validation checks**: Post-installation validation and health checks
 - **Standards compliance**: Follows OPNsense development guidelines
 
+## WAN Interface Prerequisites
+
+> ⚠️ **These requirements must be satisfied before installation. Skipping them produces silent failures — the scripts run normally but failover will not work correctly in production.**
+
+The HA solution depends on the BACKUP node being able to assume the active WAN identity seamlessly when it transitions to MASTER. This requires the following conditions on every WAN interface on both nodes.
+
+### 1. MAC Address Cloning (Required)
+
+Both firewalls' WAN interfaces **must present the same MAC address** to the upstream network.
+
+**Why**: ISPs and upstream routers typically bind DHCP leases to MAC addresses. If the BACKUP node comes up with a different MAC after failover, the upstream router issues a new lease — or refuses to issue one at all until the old lease expires. This causes a connectivity gap of minutes to hours.
+
+**How to configure in OPNsense GUI**:
+1. Go to `Interfaces → [WAN interface name]`
+2. Scroll to **MAC address** field
+3. Enter the MAC address of the **primary firewall's** WAN interface on **both nodes**
+4. Save and apply
+5. Repeat for every WAN interface (WAN2, WAN3, etc.)
+
+**Verify**:
+```bash
+ifconfig <wan_device> | grep ether
+# Both nodes must show identical output
+```
+
+**For multiple WAN interfaces**: Each WAN interface pair (primary WAN ↔ secondary WAN) must share a MAC independently.
+
+### 2. Matching DHCPv6 DUID (Required for IPv6)
+
+Both firewalls **must use the same DHCP Unique Identifier (DUID)** for IPv6 prefix delegation.
+
+**Why**: DHCPv6 servers bind prefix delegations to the DUID, not the MAC address. If the BACKUP node presents a different DUID on failover, the DHCPv6 server will not hand over the existing prefix delegation — the BACKUP node will either get a different prefix or none at all, breaking all downstream IPv6 addressing that depends on the delegated prefix.
+
+**How to configure**:
+1. Note the DUID from the primary firewall:
+   ```bash
+   # On primary firewall
+   cat /var/db/dhcp6c_duid
+   # or
+   cat /var/db/dhcpv6_duid
+   ```
+2. Copy the exact DUID value to the secondary firewall:
+   ```bash
+   # On secondary firewall (as root)
+   echo -n '<duid-value-from-primary>' > /var/db/dhcp6c_duid
+   ```
+3. In OPNsense GUI: `Interfaces → [WAN] → DHCPv6 client → DUID` — set the same value on both nodes.
+
+**Verify**:
+```bash
+# Both nodes must return identical output
+cat /var/db/dhcp6c_duid
+```
+
+### 3. DHCP-Based WAN Addressing (Required)
+
+WAN interfaces must use **DHCP** (not static) for IPv4 address assignment.
+
+**Why**: The DHCP renewal workflow (`configctl interface reconfigure` / `configctl interface newip`) that restores routes during a MASTER transition only applies to DHCP interfaces. Static WAN interfaces will not trigger route restoration and will require manual intervention after failover.
+
+**How to configure**: `Interfaces → [WAN] → IPv4 Configuration Type → DHCP`
+
+### 4. No CARP VIPs on WAN Interfaces
+
+Do **not** place CARP Virtual IPs on WAN interfaces. WAN failover is managed entirely by the script (interface up/down + DHCP renewal), not by CARP VIPs.
+
+**CARP VIPs belong only on LAN/internal interfaces** where clients need a stable shared IP.
+
+### 5. Dual Registration in Configuration File
+
+Each WAN interface must appear in **two separate configuration variables** in `/usr/local/etc/ha-singleton.conf`:
+
+| Variable | Value format | Used for |
+|---|---|---|
+| `WAN_INTS` | kernel device name | `ifconfig <dev> up/down` |
+| `WAN_INTERFACE_MAP` | `opnsense_name:device_name` | `configctl interface reconfigure/newip` |
+
+Example for a dual-WAN setup:
+```bash
+WAN_INTS="vtnet1 vtnet2"
+WAN_INTERFACE_MAP="wan:vtnet1 wan2:vtnet2"
+```
+
+If a WAN device is in `WAN_INTS` but missing from `WAN_INTERFACE_MAP`, the interface will be brought up/down correctly but DHCP lease renewal will silently skip it, leaving IPv4 routes stale after failover.
+
+### WAN Prerequisites Checklist
+
+Before running `setup-firewall`, confirm all of the following:
+
+- [ ] Both nodes: WAN MAC address(es) cloned to match primary
+- [ ] Both nodes: DHCPv6 DUID matches (if using IPv6 prefix delegation)
+- [ ] Both nodes: WAN interface(s) set to DHCP for IPv4
+- [ ] Both nodes: No CARP VIPs assigned to WAN interfaces
+- [ ] Config file: Every WAN device listed in both `WAN_INTS` and `WAN_INTERFACE_MAP`
+
 ## Quick Start
 
 ### Automated Installation with setup-firewall
