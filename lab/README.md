@@ -172,10 +172,9 @@ A sequenced checklist for building the isolated lab. Tasks are grouped by depend
 - [ ] **1.4** Download OPNsense ISO and upload to Proxmox ISO storage
   - Source: https://opnsense.org/download/ — select `dvd`, `amd64`
   - Filename pattern: `OPNsense-<version>-dvd-amd64.iso`
-- [ ] **1.5** Create the `vmbr-lab` VLAN-aware bridge on the Proxmox host (see [Proxmox Setup → Step 1](#1-create-the-lab-bridge))
-  - `bridge_ports none` (fully internal — no physical NIC required)
-  - VLAN-aware: yes
-  - Apply with `ifreload -a`
+- [ ] **1.5** Confirm VLANs 210-213 are free on `vmbr0` — **already verified, no action needed**
+  - Both nodes use OVS (`vmbr0`); lab VMs attach directly to `vmbr0` with VLAN tags 210-213
+  - No new bridge required
 
 ### Group 2 — ISP Simulator LXCs
 
@@ -264,23 +263,15 @@ The sections below are detailed setup reference supporting the task list above.
 
 ## Proxmox Setup
 
-### 1. Create the lab bridge
+### 1. Verify bridge — no new bridge required (OVS)
 
-In the Proxmox GUI under the host's **Network** tab, or via `/etc/network/interfaces`:
+Both Proxmox nodes (`proxima`, `toliman`) use **Open vSwitch (OVSBridge `vmbr0`)**, not standard Linux bridges. OVS isolates VLANs natively, so lab VMs simply connect to the existing `vmbr0` bridge with a VLAN tag — no new bridge creation is needed.
 
-```
-auto vmbr-lab
-iface vmbr-lab inet manual
-    bridge_ports none
-    bridge_stp off
-    bridge_fd 0
-    bridge_vlan_aware yes
-    bridge_vids 2-4094
-```
+VLANs 210-213 are confirmed unused on both nodes. All lab VMs and LXCs will be attached to `vmbr0` with the appropriate VLAN tag; OVS enforces isolation between VLANs automatically.
 
-> **Note**: `bridge_ports none` creates a fully internal bridge with no uplink to a physical NIC. All lab traffic stays inside the Proxmox host. If you later want VMs on physical switch VLANs 210-213, change `bridge_ports none` to the trunk NIC.
+> **No action required for this step.** If you were expecting a `vmbr-lab` entry in the Proxmox network config, this is why it won't be there.
 
-Apply with `ifreload -a` or reboot.
+**Phase 2 note**: `proxima` has an unassigned physical NIC (`enp5s0`) not currently in any bridge or bond. This is the candidate uplink NIC for the Phase 2 lab-uplink (VLAN 214). No action now.
 
 ### 2. Create ISP simulator LXCs
 
@@ -404,11 +395,11 @@ Adds a VLAN 214 `lab-uplink` segment connecting the lab firewall pair to the pro
 
 ### 2B — Physical Switch VLANs
 
-Moves VLANs 210-213 from the internal `vmbr-lab` bridge to physical switch ports:
+Moves VLANs 210-213 from the internal OVS bridge to physical switch ports:
 
 1. Configure VLANs 210-213 on the physical switch.
-2. Assign a trunk port from the switch to the Proxmox host.
-3. Change `bridge_ports none` to `bridge_ports <trunk_nic>` in the `vmbr-lab` config.
+2. `proxima` has `enp5s0` currently unassigned — this is the candidate trunk NIC. Add it to `bond0` or create a new OVS port for it.
+3. Tag VLANs 210-213 on the physical switch trunk port connected to `enp5s0`.
 4. ISP simulator LXCs can optionally be moved to physical ports in their respective VLANs, or left virtual.
 
 The firewall VMs and their `ha-singleton.conf` configs require no changes for this migration.
