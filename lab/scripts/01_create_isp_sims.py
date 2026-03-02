@@ -108,19 +108,58 @@ def setup_sim(sim: dict) -> bool:
         if not lib.start_vm(vmid, "lxc"):
             lib.print_err(f"Failed to start {name}")
             return False
-        time.sleep(3)  # let init settle
+        time.sleep(3)
 
-    print(f"  Installing dnsmasq in {name}...")
-    rc, log = lib.pct_exec(vmid, "apk update -q && apk add -q dnsmasq")
-    if rc != 0:
-        lib.print_err(f"apk install failed (exit {rc}): {log[-300:]}")
-        return False
-    lib.print_ok("dnsmasq installed")
+    # Check if dnsmasq is already installed
+    rc, _ = lib.pct_exec(vmid, "which dnsmasq")
+    dnsmasq_installed = (rc == 0)
 
-    # Enable IP forwarding
+    if not dnsmasq_installed:
+        # Add a temporary management NIC so apk can reach the internet
+        print(f"  Adding temporary management NIC for package install...")
+        try:
+            lib.api_post(f"/api2/json/nodes/{lib.NODE}/lxc/{vmid}/status/stop")
+            time.sleep(4)
+            lib.api_put(f"/api2/json/nodes/{lib.NODE}/lxc/{vmid}/config", {
+                "net1": "name=eth1,bridge=vmbr0,firewall=0,ip=dhcp",
+            })
+            lib.start_vm(vmid, "lxc")
+            time.sleep(6)  # wait for DHCP on mgmt NIC
+        except Exception as e:
+            lib.print_err(f"Could not add mgmt NIC: {e}")
+            return False
+
+        print(f"  Installing dnsmasq in {name}...")
+        rc, log = lib.pct_exec(vmid,
+            "echo 'nameserver 8.8.8.8' >> /etc/resolv.conf && "
+            "apk update -q && apk add -q dnsmasq")
+        if rc != 0:
+            lib.print_err(f"apk install failed (exit {rc}): {log[-400:]}")
+            return False
+        lib.print_ok("dnsmasq installed")
+
+        # Remove temporary management NIC
+        print(f"  Removing temporary management NIC...")
+        try:
+            lib.api_post(f"/api2/json/nodes/{lib.NODE}/lxc/{vmid}/status/stop")
+            time.sleep(4)
+            lib.api_put(f"/api2/json/nodes/{lib.NODE}/lxc/{vmid}/config", {
+                "delete": "net1",
+            })
+            lib.start_vm(vmid, "lxc")
+            time.sleep(3)
+            lib.print_ok("Temporary NIC removed")
+        except Exception as e:
+            lib.print_err(f"Could not remove mgmt NIC: {e}")
+            return False
+    else:
+        lib.print_ok("dnsmasq already installed")
+
+    # Enable IP forwarding (idempotent — duplicate entries are harmless)
     rc, _ = lib.pct_exec(vmid,
+        "grep -q 'ip_forward' /etc/sysctl.conf || ("
         "echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf && "
-        "echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf && "
+        "echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf); "
         "sysctl -p /etc/sysctl.conf 2>/dev/null; true")
     lib.print_ok("IP forwarding enabled")
 
@@ -136,21 +175,21 @@ def setup_sim(sim: dict) -> bool:
         return False
     lib.print_ok("dnsmasq config deployed")
 
-    # Enable and start dnsmasq
+    # Enable and (re)start dnsmasq
     rc, log = lib.pct_exec(vmid,
-        "rc-update add dnsmasq default && rc-service dnsmasq restart")
+        "rc-update add dnsmasq default 2>/dev/null; rc-service dnsmasq restart")
     if rc != 0:
-        lib.print_err(f"dnsmasq service failed (exit {rc}): {log[-300:]}")
+        lib.print_err(f"dnsmasq service failed (exit {rc}): {log[-400:]}")
         return False
     lib.print_ok("dnsmasq started")
 
     # Verify
     rc, log = lib.pct_exec(vmid,
-        "netstat -ulnp 2>/dev/null | grep ':67 ' || ss -ulnp | grep ':67 ' || echo 'checking-via-ps' && ps | grep dnsmasq | grep -v grep")
-    if "dnsmasq" in log or "check" not in log:
+        "ps | grep dnsmasq | grep -v grep && echo running || echo not-running")
+    if "running" in log and "not-running" not in log:
         lib.print_ok("dnsmasq running")
     else:
-        print(f"  ⚠  Could not confirm dnsmasq — verify manually in container {vmid}")
+        print(f"  ⚠  Could not confirm dnsmasq — check container {vmid} manually")
 
     return True
 
