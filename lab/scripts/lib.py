@@ -27,7 +27,8 @@ def _load_env():
                 continue
             key, _, val = line.partition("=")
             val = val.strip().strip('"').strip("'")
-            os.environ.setdefault(key.strip(), val)
+            # Always write from file so updates take effect without a new shell
+            os.environ[key.strip()] = val
 
 _load_env()
 
@@ -88,8 +89,8 @@ IPV4_ISP_ATT     = "10.220.11.1/30"
 IPV4_FW_PRIMARY  = "10.220.1.2/24"
 IPV4_FW_SECONDARY= "10.220.1.3/24"
 IPV4_FW_CARP     = "10.220.1.1"
-IPV4_FW_PFSYNC_PRIMARY   = "10.220.3.1/30"
-IPV4_FW_PFSYNC_SECONDARY = "10.220.3.2/30"
+IPV4_FW_PFSYNC_PRIMARY   = "10.220.3.2/30"
+IPV4_FW_PFSYNC_SECONDARY = "10.220.3.3/30"
 
 # IPv6 addressing
 IPV6_ISP_XFINITY = "fd03:17ac:e938:4000::1/64"

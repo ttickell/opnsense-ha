@@ -66,7 +66,7 @@ This document covers Phase 1 in full. See [Phase 2 (Future)](#phase-2-future) fo
 | lab-wan-a | 210 | `10.220.10.0/30` | ISP-A sim: `.1` ; FW WAN: DHCP (`.2`) |
 | lab-wan-b | 211 | `10.220.11.0/30` | ISP-B sim: `.1` ; FW WAN2: DHCP (`.2`) |
 | lab-lan | 212 | `10.220.1.0/24` | CARP VIP: `.1` ; Primary FW: `.2` ; Secondary FW: `.3` |
-| lab-pfsync | 213 | `10.220.3.0/30` | Primary FW: `.1` ; Secondary FW: `.2` |
+| lab-pfsync | 213 | `10.220.3.0/30` | Primary FW: `.2` ; Secondary FW: `.3` |
 
 ### IPv6
 
@@ -209,7 +209,7 @@ A sequenced checklist for building the isolated lab. Tasks are grouped by depend
 - [ ] **3.5** Install OPNsense on both VMs via console (boot from ISO, follow installer, assign interfaces)
   - vtnet0 → WAN, vtnet1 → WAN2, vtnet2 → LAN, vtnet3 → no assignment (used directly for PFSYNC)
   - LAN: `10.220.1.2/24` (primary), `10.220.1.3/24` (secondary)
-  - PFSYNC: `10.220.3.1/30` (primary), `10.220.3.2/30` (secondary)
+  - PFSYNC: `10.220.3.2/30` (primary), `10.220.3.3/30` (secondary)
 - [ ] **3.6** Configure CARP in OPNsense GUI on both nodes (VIP `10.220.1.1`, VHID 1)
 - [ ] **3.7** Configure PFSYNC in OPNsense GUI; verify `pfctl -s References` shows sync active
 - [ ] **3.8** On `lab-fw-primary`: install `ha-singleton` scripts via `setup-firewall`:
