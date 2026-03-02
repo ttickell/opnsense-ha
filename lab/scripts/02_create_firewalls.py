@@ -3,8 +3,8 @@
 02_create_firewalls.py — Create lab firewall VMs.
 
 Creates:
-  VMID 112  lab-fw-primary    OPNsense VM  2 vCPU  2 GB RAM  8 GB disk
-  VMID 113  lab-fw-secondary  OPNsense VM  2 vCPU  2 GB RAM  8 GB disk
+  VMID 112  lab-fw-primary    OPNsense VM  2 vCPU  2 GB RAM  16 GB disk
+  VMID 113  lab-fw-secondary  OPNsense VM  2 vCPU  2 GB RAM  16 GB disk
 
 NICs (both VMs):
   vtnet0 — VLAN 210  WAN  (Xfinity)
@@ -69,7 +69,7 @@ def create_vm(vmid: int, name: str, net0: str, net1: str,
         "net2":      net2,
         "net3":      net3,
         "ide2":      f"{lib.OPNSENSE_ISO},media=cdrom",
-        "scsi0":     f"{lib.STORAGE_VM}:8",   # 8 GB system disk
+        "scsi0":     f"{lib.STORAGE_VM}:16",  # 16 GB system disk (8 GB is too tight for gpart autofill)
         "scsihw":    "virtio-scsi-pci",
         "boot":      "order=ide2;scsi0",
         "ostype":    "other",
