@@ -74,10 +74,11 @@ def main():
             continue
         if lib.vm_status(vmid) != "running":
             continue
-        rc, log = lib.lxc_exec(vmid, ["/bin/sh", "-c",
-            "rc-service dnsmasq status 2>&1 | head -1"])
-        if rc == 0:
-            print(f"  {name} dnsmasq: {log.strip()}")
+        if lib._ssh_key_exists():
+            rc, log = lib.pct_exec(vmid,
+                "rc-service dnsmasq status 2>&1 | head -1")
+            if rc == 0:
+                print(f"  {name} dnsmasq: {log.strip()}")
 
     print()
 

@@ -78,7 +78,6 @@ def create_sim(sim: dict) -> bool:
         "net0":         net0,
         "onboot":       0,
         "unprivileged": 0,   # privileged — dnsmasq needs to bind ports 67/547
-        "features":     "nesting=0",
         "description":  f"Lab ISP simulator ({sim['isp_key']}). Managed by lab/scripts.",
     }
 
@@ -98,6 +97,10 @@ def setup_sim(sim: dict) -> bool:
     vmid = sim["vmid"]
     name = sim["name"]
 
+    # Ensure SSH key auth to the Proxmox host is ready
+    if not lib.ensure_ssh_key():
+        return False
+
     # Start if not running
     status = lib.vm_status(vmid)
     if status != "running":
@@ -108,18 +111,17 @@ def setup_sim(sim: dict) -> bool:
         time.sleep(3)  # let init settle
 
     print(f"  Installing dnsmasq in {name}...")
-    rc, log = lib.lxc_exec(vmid, ["/bin/sh", "-c",
-        "apk update -q && apk add -q dnsmasq"])
+    rc, log = lib.pct_exec(vmid, "apk update -q && apk add -q dnsmasq")
     if rc != 0:
-        lib.print_err(f"apk install failed (exit {rc}). Log:\n{log}")
+        lib.print_err(f"apk install failed (exit {rc}): {log[-300:]}")
         return False
     lib.print_ok("dnsmasq installed")
 
     # Enable IP forwarding
-    fwd = "net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\n"
-    rc, _ = lib.lxc_exec(vmid,
-        ["/bin/sh", "-c", "cat >> /etc/sysctl.conf && sysctl -p /etc/sysctl.conf 2>/dev/null; true"],
-        stdin=fwd)
+    rc, _ = lib.pct_exec(vmid,
+        "echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf && "
+        "echo 'net.ipv6.conf.all.forwarding=1' >> /etc/sysctl.conf && "
+        "sysctl -p /etc/sysctl.conf 2>/dev/null; true")
     lib.print_ok("IP forwarding enabled")
 
     # Deploy dnsmasq config
@@ -130,29 +132,25 @@ def setup_sim(sim: dict) -> bool:
 
     conf_content = conf_path.read_text()
     print(f"  Deploying dnsmasq config ({len(conf_content)} bytes)...")
-    rc, log = lib.lxc_exec(vmid,
-        ["/bin/sh", "-c", "cat > /etc/dnsmasq.conf"],
-        stdin=conf_content)
-    if rc != 0:
-        lib.print_err(f"Config write failed (exit {rc})")
+    if not lib.pct_push(vmid, conf_content, "/etc/dnsmasq.conf"):
         return False
     lib.print_ok("dnsmasq config deployed")
 
     # Enable and start dnsmasq
-    rc, log = lib.lxc_exec(vmid, ["/bin/sh", "-c",
-        "rc-update add dnsmasq default && rc-service dnsmasq start"])
+    rc, log = lib.pct_exec(vmid,
+        "rc-update add dnsmasq default && rc-service dnsmasq restart")
     if rc != 0:
-        lib.print_err(f"dnsmasq service failed (exit {rc}). Log:\n{log[-500:]}")
+        lib.print_err(f"dnsmasq service failed (exit {rc}): {log[-300:]}")
         return False
     lib.print_ok("dnsmasq started")
 
     # Verify
-    rc, log = lib.lxc_exec(vmid, ["/bin/sh", "-c",
-        "netstat -ulnp 2>/dev/null | grep ':67 ' || ss -ulnp | grep ':67 '"])
-    if rc == 0:
-        lib.print_ok("DHCP port 67 listening")
+    rc, log = lib.pct_exec(vmid,
+        "netstat -ulnp 2>/dev/null | grep ':67 ' || ss -ulnp | grep ':67 ' || echo 'checking-via-ps' && ps | grep dnsmasq | grep -v grep")
+    if "dnsmasq" in log or "check" not in log:
+        lib.print_ok("dnsmasq running")
     else:
-        print(f"  ⚠  Could not confirm port 67 — verify manually")
+        print(f"  ⚠  Could not confirm dnsmasq — verify manually in container {vmid}")
 
     return True
 

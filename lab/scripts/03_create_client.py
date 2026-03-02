@@ -81,13 +81,15 @@ def start_and_verify() -> bool:
         return False
     time.sleep(5)
 
-    # Quick verification
-    rc, log = lib.lxc_exec(vmid, ["/bin/sh", "-c",
-        "ip addr show eth0 | grep 'inet ' || echo 'no-ip-yet'"])
+    if not lib.ensure_ssh_key():
+        print("  ⚠  SSH not set up — skipping IP check. Verify via Proxmox console.")
+        return True
+
+    rc, log = lib.pct_exec(vmid,
+        "ip addr show eth0 | grep 'inet ' || echo 'no-ip-yet'")
     if "no-ip-yet" in log or rc != 0:
         print("  ⚠  No IP yet — DHCP may still be in progress")
-        print("     Wait for lab firewalls to be up, then check:")
-        print("     ip addr show eth0")
+        print("     Wait for lab firewalls to be up, then check: ip addr show eth0")
     else:
         lib.print_ok(f"Client IP: {log.strip()}")
 

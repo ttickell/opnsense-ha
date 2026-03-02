@@ -35,6 +35,18 @@ PROX_URL   = os.environ["PROX_MOX_URL"].rstrip("/")
 PROX_USER  = os.environ["PROX_MOX_USER"]   # root@pam!fw-lab
 PROX_TOKEN = os.environ["PROX_MOX_TOKEN"]  # uuid
 
+# SSH access to the Proxmox host (for pct exec / pct push)
+# PROX_MOX_SSH_PASS  — root password; only needed for one-time key bootstrap
+# PROX_MOX_SSH_KEY   — path to private key; auto-set after bootstrap
+PROX_SSH_HOST = os.environ.get("PROX_MOX_SSH_HOST", "").strip()
+if not PROX_SSH_HOST:
+    # derive from PROX_URL
+    import urllib.parse as _up
+    PROX_SSH_HOST = _up.urlparse(PROX_URL).hostname or ""
+PROX_SSH_PASS = os.environ.get("PROX_MOX_SSH_PASS", "").strip().strip('"').strip("'")
+PROX_SSH_KEY  = os.environ.get("PROX_MOX_SSH_KEY",
+    str(Path.home() / ".ssh" / "proxmox_lab")).strip()
+
 
 # ---------------------------------------------------------------------------
 # Lab constants
@@ -246,3 +258,113 @@ def print_skip(msg: str) -> None:
 
 def print_err(msg: str) -> None:
     print(f"  ✗ {msg}")
+
+
+# ---------------------------------------------------------------------------
+# SSH helpers — run commands on the Proxmox host via pct exec / pct push
+# ---------------------------------------------------------------------------
+
+import subprocess
+
+_SSH_BASE = [
+    "ssh",
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=10",
+]
+
+
+def _ssh_key_exists() -> bool:
+    return Path(PROX_SSH_KEY).exists()
+
+
+def ensure_ssh_key() -> bool:
+    """
+    Ensure key-based SSH auth to the Proxmox host is set up.
+    If the key doesn't exist, generate one.
+    If the key isn't authorised yet, bootstrap using PROX_SSH_PASS.
+    Returns True if SSH key auth is working.
+    """
+    key = Path(PROX_SSH_KEY)
+    pub = Path(str(PROX_SSH_KEY) + ".pub")
+
+    # Generate key if missing
+    if not key.exists():
+        print(f"  Generating SSH key: {key}")
+        subprocess.run(
+            ["ssh-keygen", "-t", "ed25519", "-f", str(key), "-N", "", "-C", "proxmox-lab"],
+            check=True, capture_output=True,
+        )
+        print_ok(f"Generated {key}")
+
+    # Test if key auth already works
+    result = subprocess.run(
+        _SSH_BASE + ["-i", str(key), f"root@{PROX_SSH_HOST}", "echo ok"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode == 0:
+        return True
+
+    # Need to install key — requires PROX_SSH_PASS
+    if not PROX_SSH_PASS:
+        print_err(
+            "SSH key auth not set up and PROX_MOX_SSH_PASS not set in .env.\n"
+            "  Add PROX_MOX_SSH_PASS=<root-password> to .env, then re-run."
+        )
+        return False
+
+    print(f"  Copying SSH key to {PROX_SSH_HOST} (one-time)...")
+    env = os.environ.copy()
+    env["SSHPASS"] = PROX_SSH_PASS
+    result = subprocess.run(
+        ["sshpass", "-e", "ssh-copy-id",
+         "-o", "StrictHostKeyChecking=no",
+         "-i", str(pub),
+         f"root@{PROX_SSH_HOST}"],
+        env=env, capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        print_err(f"ssh-copy-id failed: {result.stderr.strip()}")
+        return False
+    print_ok("SSH key installed on Proxmox host")
+    print("  Tip: you can now remove PROX_MOX_SSH_PASS from .env")
+    return True
+
+
+def host_exec(command: str, timeout: int = 60) -> tuple[int, str]:
+    """
+    Run a shell command on the Proxmox host via SSH.
+    Returns (exit_code, combined stdout+stderr).
+    """
+    result = subprocess.run(
+        _SSH_BASE + ["-i", PROX_SSH_KEY, f"root@{PROX_SSH_HOST}", command],
+        capture_output=True, text=True, timeout=timeout,
+    )
+    return result.returncode, (result.stdout + result.stderr).strip()
+
+
+def pct_exec(vmid: int, command: str, timeout: int = 120) -> tuple[int, str]:
+    """Run a shell command inside an LXC container via pct exec on the host."""
+    return host_exec(f"pct exec {vmid} -- /bin/sh -c {repr(command)}", timeout=timeout)
+
+
+def pct_push(vmid: int, content: str, remote_path: str) -> bool:
+    """
+    Write string content to a file inside an LXC container.
+    Uses a heredoc piped through pct exec.
+    """
+    # Write to a temp file on the host, then pct push it
+    tmp = f"/tmp/pct_push_{vmid}_{abs(hash(remote_path)) % 100000}"
+    # Write content to host temp file via ssh
+    result = subprocess.run(
+        _SSH_BASE + ["-i", PROX_SSH_KEY, f"root@{PROX_SSH_HOST}",
+                     f"cat > {tmp}"],
+        input=content, text=True, capture_output=True, timeout=30,
+    )
+    if result.returncode != 0:
+        print_err(f"pct_push: failed to write temp file: {result.stderr}")
+        return False
+    rc, out = host_exec(f"pct push {vmid} {tmp} {remote_path} && rm -f {tmp}")
+    if rc != 0:
+        print_err(f"pct push failed: {out}")
+    return rc == 0
