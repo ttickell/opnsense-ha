@@ -58,7 +58,8 @@ STORAGE_VM  = "local-zfs"    # ZFS pool — VM disks and LXC rootfs
 STORAGE_ISO = "Synology"     # NFS — ISOs
 STORAGE_TPL = "local"        # dir  — LXC templates (vztmpl)
 
-OPNSENSE_ISO = "Synology:iso/OPNsense-25.1-dvd-amd64.iso"
+OPNSENSE_ISO   = "Synology:iso/OPNsense-25.1-dvd-amd64.iso"
+UBUNTU_DESKTOP_ISO     = "Synology:iso/ubuntu-25.04-desktop-amd64.iso"
 
 # VMID / CTID assignments
 VMID_ISP_XFINITY  = 110
@@ -66,6 +67,7 @@ VMID_ISP_ATT      = 111
 VMID_FW_PRIMARY   = 112
 VMID_FW_SECONDARY = 113
 VMID_CLIENT       = 114
+VMID_DESKTOP      = 115  # Ubuntu desktop VM — browser access to OPNsense GUI
 
 LAB_VMIDS = [
     VMID_ISP_XFINITY,
@@ -73,6 +75,7 @@ LAB_VMIDS = [
     VMID_FW_PRIMARY,
     VMID_FW_SECONDARY,
     VMID_CLIENT,
+    VMID_DESKTOP,
 ]
 
 PROTECTED_VMIDS = [100]  # router-b — never touch
@@ -91,6 +94,7 @@ IPV4_FW_SECONDARY= "10.220.1.3/24"
 IPV4_FW_CARP     = "10.220.1.1"
 IPV4_FW_PFSYNC_PRIMARY   = "10.220.3.2/30"
 IPV4_FW_PFSYNC_SECONDARY = "10.220.3.3/30"
+IPV4_DESKTOP             = "10.220.1.10/24"  # lab-desktop static IP
 
 # IPv6 addressing
 IPV6_ISP_XFINITY = "fd03:17ac:e938:4000::1/64"
