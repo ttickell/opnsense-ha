@@ -73,12 +73,31 @@ opnsense-ha/
 │   ├── ha-singleton-primary.conf
 │   └── ha-singleton-secondary.conf
 │
-├── opnsense-core/                     # Submodule: upstream OPNsense core source (reference)
-├── opnsense-docs/                     # Submodule: upstream OPNsense documentation (reference)
-└── opnsense-ipv6/                     # Submodule: IPv6 dual-WAN management (integrates here)
+├── opnsense-core/                     # Submodule: upstream OPNsense core source (reference only)
+├── opnsense-docs/                     # Submodule: upstream OPNsense documentation (reference only)
+└── opnsense-ipv6/                     # Submodule: self-developed IPv6 scripts (reference only)
 ```
 
-> **Submodule note**: `opnsense-core`, `opnsense-docs`, and `opnsense-ipv6` are upstream reference repos and are **not** modified in this project. Do not edit files under those directories.
+---
+
+## Git Submodules
+
+This repo contains three submodules. **None of them are modified here.** Do not edit files under any of these directories.
+
+### `opnsense-core/`
+The official [OPNsense core](https://github.com/opnsense/core) source tree. Included as a read-only reference so that script conventions, `configctl` action definitions, and OPNsense API patterns can be verified against the actual implementation without leaving the repo.
+
+### `opnsense-docs/`
+The official [OPNsense documentation](https://github.com/opnsense/docs) source. Included as a read-only reference for looking up GUI paths, feature descriptions, and API documentation.
+
+### `opnsense-ipv6/`
+A self-developed repo of findings and scripts written to make IPv6 work on OPNsense with two specific ISPs (Xfinity / Comcast and AT&T) and to leverage all available Prefix Delegation (PD) assignments to add IPv6 to internal subnets.
+
+**Important caveats about this submodule**:
+- It was written experimentally — the author acknowledges it likely does not follow OPNsense best practices.
+- It captures real-world discoveries about how AT&T and Comcast expose DHCPv6 PD, which are not well documented elsewhere.
+- The integration goals for pulling this work into `opnsense-ha` properly are tracked in [docs/IPV6_Integration.md](../docs/IPV6_Integration.md) and [docs/IPV6_INTEGRATION_ANALYSIS.md](../docs/IPV6_INTEGRATION_ANALYSIS.md).
+- When referencing this submodule, treat it as a source of working logic to be understood and re-implemented to OPNsense standards — not code to be copied verbatim.
 
 ---
 
