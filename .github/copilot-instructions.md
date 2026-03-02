@@ -69,9 +69,19 @@ opnsense-ha/
 │   ├── ha-singleton-primary.conf      # Config for the primary firewall
 │   └── ha-singleton-secondary.conf    # Config for the secondary firewall
 │
-├── test/                              # Test environment configs
+├── test/                              # Test environment ha-singleton configs
 │   ├── ha-singleton-primary.conf
 │   └── ha-singleton-secondary.conf
+│
+├── lab/                               # Virtual HA lab environment
+│   ├── README.md                      # Lab design, IP allocation, Proxmox setup steps
+│   ├── isp-simulators/
+│   │   ├── setup.sh                   # Bootstrap script for Alpine ISP simulator LXCs
+│   │   ├── xfinity/dnsmasq.conf       # Simulates Xfinity: single IPv4 + two /60 PD delegations
+│   │   └── att/dnsmasq.conf           # Simulates AT&T: single IPv4 + drip-fed /64 PD delegations
+│   └── firewall-configs/
+│       ├── ha-singleton-primary.conf  # ha-singleton.conf for lab-fw-primary
+│       └── ha-singleton-secondary.conf # ha-singleton.conf for lab-fw-secondary
 │
 ├── opnsense-core/                     # Submodule: upstream OPNsense core source (reference only)
 ├── opnsense-docs/                     # Submodule: upstream OPNsense documentation (reference only)
@@ -225,5 +235,6 @@ The `real/` directory is excluded from version control via `.gitignore`. Product
 | Hardware replacement procedure | README.md → Hardware Replacement Guidance |
 | Debugging `configctl` errors | [docs/HOW_TO_DEBUG.md](../docs/HOW_TO_DEBUG.md) |
 | IPv6 prefix delegation / NPTv6 | [docs/IPV6_Integration.md](../docs/IPV6_Integration.md); `opnsense-ipv6/` submodule |
+| Lab setup and ISP simulation | [lab/README.md](../lab/README.md); `lab/isp-simulators/`; `lab/firewall-configs/` |
 | Production site config | [docs/Goal.md](../docs/Goal.md); `real/` (local only) |
 | Test validation | `test-ha-setup.sh`; `test/` configs |
