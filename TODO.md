@@ -92,24 +92,39 @@ Changes made to the `proxima` Proxmox host for lab testing that must be undone w
 
 ### Temporary changes (lost on reboot — action only needed if proxima is NOT rebooted first)
 
-- [ ] **iptables NAT masquerade rule** — gives lab firewalls temporary internet access for `setup-firewall`
+**⚠️ HOLD: Keep these rules ACTIVE until all HA testing is complete, then remove them.**
+
+- [ ] **iptables NAT masquerade rule** — gives lab firewalls temporary internet access for `setup-firewall` and git pulls
   ```
   iptables -t nat -A POSTROUTING -s 10.220.1.0/24 -j MASQUERADE
   ```
-  **To undo**: `iptables -t nat -D POSTROUTING -s 10.220.1.0/24 -j MASQUERADE`
+  **To undo** (after testing done): `iptables -t nat -D POSTROUTING -s 10.220.1.0/24 -j MASQUERADE`
 
-- [ ] **iptables FORWARD rules** for lab LAN traffic
+- [ ] **iptables FORWARD rules** for lab LAN traffic during testing
   ```
   iptables -A FORWARD -s 10.220.1.0/24 -j ACCEPT
   iptables -A FORWARD -d 10.220.1.0/24 -m state --state RELATED,ESTABLISHED -j ACCEPT
   ```
-  **To undo**:
+  **To undo** (after testing done):
   ```
   iptables -D FORWARD -s 10.220.1.0/24 -j ACCEPT
   iptables -D FORWARD -d 10.220.1.0/24 -m state --state RELATED,ESTABLISHED -j ACCEPT
   ```
 
 > Note: `net.ipv4.ip_forward` was already `1` on proxima before these changes — no action needed to restore it.
+> 
+> **Cleanup script** (when testing is complete):
+> ```python
+> cd /Users/tickell/workspace/opnsense-ha && source .env && python3 << 'PYEOF'
+> import sys; sys.path.insert(0, 'lab/scripts')
+> import lib
+> for cmd in ['iptables -t nat -D POSTROUTING -s 10.220.1.0/24 -j MASQUERADE',
+>             'iptables -D FORWARD -s 10.220.1.0/24 -j ACCEPT',
+>             'iptables -D FORWARD -d 10.220.1.0/24 -m state --state RELATED,ESTABLISHED -j ACCEPT']:
+>     rc, out = lib.host_exec(cmd)
+>     print(f'[{rc}] removed')
+> PYEOF
+> ```
 
 ---
 
