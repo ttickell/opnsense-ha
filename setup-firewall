@@ -79,6 +79,8 @@ usage() {
     echo "Options:"
     echo "  --cleanup, -c         Clean existing HA installation before installing"
     echo "  --fix-flapping, -f    Fix CARP flapping by disabling conflicting scripts (no install)"
+    echo "  --alt-gw-ipv4 <ip>    Peer firewall LAN IPv4 gateway for BACKUP default route"
+    echo "  --alt-gw-ipv6 <ip>    Optional peer firewall LAN IPv6 gateway for BACKUP default route"
     echo "  --test, -t           Test existing configuration (no install)"
     echo "  --help, -h           Show this help message"
     echo
@@ -95,6 +97,8 @@ usage() {
     echo "  $0 --test                    # Test existing configuration"
     echo "  $0 vtnet1                    # Single WAN interface, main branch"
     echo "  $0 \"vtnet1 vtnet2\"           # Multiple WAN interfaces, main branch"
+    echo "  $0 --alt-gw-ipv4 10.220.1.3 \"vtnet0 vtnet1\""
+    echo "  $0 --alt-gw-ipv4 10.220.1.3 --alt-gw-ipv6 fd03:17ac:e938:4200::3 \"vtnet0 vtnet1\""
     echo "  $0 vtnet1 ghcwork            # Single WAN interface, ghcwork branch"
     echo "  $0 --cleanup \"vtnet1 vtnet2\" develop  # Clean first, multi-WAN, develop branch"
     echo
@@ -153,6 +157,9 @@ FIX_FLAPPING_ONLY=false
 TEST_CONFIG_ONLY=false
 WAN_INTERFACES=""
 BRANCH_NAME=""
+ALT_GW_IPV4=""
+ALT_GW_IPV6=""
+GENERATED_WAN_INTERFACE_MAP=""
 
 # Parse options and arguments
 while [ $# -gt 0 ]; do
@@ -164,6 +171,22 @@ while [ $# -gt 0 ]; do
         --fix-flapping|-f)
             FIX_FLAPPING_ONLY=true
             shift
+            ;;
+        --alt-gw-ipv4)
+            if [ -z "${2:-}" ]; then
+                log_error "--alt-gw-ipv4 requires an IPv4 address"
+                usage
+            fi
+            ALT_GW_IPV4="$2"
+            shift 2
+            ;;
+        --alt-gw-ipv6)
+            if [ -z "${2:-}" ]; then
+                log_error "--alt-gw-ipv6 requires an IPv6 address"
+                usage
+            fi
+            ALT_GW_IPV6="$2"
+            shift 2
             ;;
         --test|-t)
             TEST_MODE=true
@@ -231,6 +254,15 @@ if [ -z "${WAN_INTERFACES}" ]; then
     fi
 fi
 BRANCH_NAME="${BRANCH_NAME:-main}"
+GENERATED_WAN_INTERFACE_MAP="$(generate_wan_interface_map)"
+
+if [ -n "${ALT_GW_IPV4}" ] && ! validate_ipv4_address "${ALT_GW_IPV4}"; then
+    error_exit "Invalid IPv4 address passed to --alt-gw-ipv4: ${ALT_GW_IPV4}"
+fi
+
+if [ -n "${ALT_GW_IPV6}" ] && ! validate_ipv6_address "${ALT_GW_IPV6}"; then
+    error_exit "Invalid IPv6 address passed to --alt-gw-ipv6: ${ALT_GW_IPV6}"
+fi
 
 # Function to check if running on OPNsense
 check_opnsense() {
@@ -345,6 +377,58 @@ validate_branch() {
     fi
 }
 
+validate_ipv4_address() {
+    local ip="$1"
+    echo "${ip}" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+
+    local old_ifs="${IFS}"
+    IFS='.'
+    set -- ${ip}
+    IFS="${old_ifs}"
+
+    for octet in "$@"; do
+        if [ "${octet}" -lt 0 ] || [ "${octet}" -gt 255 ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+validate_ipv6_address() {
+    local ip="$1"
+    echo "${ip}" | grep -Eq '^[0-9A-Fa-f:]+(%[A-Za-z0-9._-]+)?$' || return 1
+    echo "${ip}" | grep -q ':' || return 1
+    return 0
+}
+
+generate_wan_interface_map() {
+    local idx=1
+    local map=""
+    local if_name=""
+
+    for iface in ${WAN_INTERFACES}; do
+        if [ ${idx} -eq 1 ]; then
+            if_name="wan"
+        else
+            if_name="wan${idx}"
+        fi
+
+        if [ -z "${map}" ]; then
+            map="${if_name}:${iface}"
+        else
+            map="${map} ${if_name}:${iface}"
+        fi
+
+        idx=$((idx + 1))
+    done
+
+    echo "${map}"
+}
+
+escape_sed_replacement() {
+    printf '%s' "$1" | sed 's/[\\/&]/\\\\&/g'
+}
+
 # Function to validate WAN interfaces exist on the system
 validate_wan_interfaces() {
     local interfaces="$1"
@@ -443,15 +527,43 @@ install_files_from_directory() {
     if [ -f "${source_dir}/usr/local/etc/ha-singleton.conf.example" ]; then
         # Always install/overwrite if cleanup was requested, otherwise respect existing file
         if [ "${CLEANUP_FIRST}" = "true" ] || [ ! -f "/usr/local/etc/ha-singleton.conf" ]; then
+            local tmp_conf="/tmp/ha-singleton.conf.$$"
+            local escaped_wan_map="$(escape_sed_replacement "${GENERATED_WAN_INTERFACE_MAP}")"
+
             # Use universal configuration template with safe defaults.
             # Route management must stay disabled until ALT_DEFROUTE_* is explicitly set
             # to the peer firewall LAN addresses for this node.
             sed "s/vtnet1 vtnet2/${WAN_INTERFACES}/g" \
                 "${source_dir}/usr/local/etc/ha-singleton.conf.example" | \
-                sed 's/^ENABLE_ROUTE_MANAGEMENT="yes"/ENABLE_ROUTE_MANAGEMENT="no"/' > \
-                /usr/local/etc/ha-singleton.conf
-            log_success "Installed universal configuration file (route management disabled by default)"
-            log_warning "Set ALT_DEFROUTE_IPV4/ALT_DEFROUTE_IPV6 for this node before enabling ENABLE_ROUTE_MANAGEMENT"
+                sed 's/^ENABLE_ROUTE_MANAGEMENT="yes"/ENABLE_ROUTE_MANAGEMENT="no"/' | \
+                sed "s|^WAN_INTERFACE_MAP=.*|WAN_INTERFACE_MAP=\"${escaped_wan_map}\"|" > \
+                "${tmp_conf}"
+
+            if [ -n "${ALT_GW_IPV4}" ]; then
+                local escaped_alt_gw_ipv4="$(escape_sed_replacement "${ALT_GW_IPV4}")"
+                sed "s|^ALT_DEFROUTE_IPV4=.*|ALT_DEFROUTE_IPV4=\"${escaped_alt_gw_ipv4}\"|" "${tmp_conf}" > "${tmp_conf}.next"
+                mv "${tmp_conf}.next" "${tmp_conf}"
+
+                sed 's/^ENABLE_ROUTE_MANAGEMENT="no"/ENABLE_ROUTE_MANAGEMENT="yes"/' "${tmp_conf}" > "${tmp_conf}.next"
+                mv "${tmp_conf}.next" "${tmp_conf}"
+                log_success "Applied ALT_DEFROUTE_IPV4 override and enabled route management"
+            else
+                log_warning "ALT_DEFROUTE_IPV4 not provided; route management remains disabled"
+            fi
+
+            if [ -n "${ALT_GW_IPV6}" ]; then
+                local escaped_alt_gw_ipv6="$(escape_sed_replacement "${ALT_GW_IPV6}")"
+                sed "s|^ALT_DEFROUTE_IPV6=.*|ALT_DEFROUTE_IPV6=\"${escaped_alt_gw_ipv6}\"|" "${tmp_conf}" > "${tmp_conf}.next"
+                mv "${tmp_conf}.next" "${tmp_conf}"
+                log_success "Applied ALT_DEFROUTE_IPV6 override"
+            else
+                sed 's|^ALT_DEFROUTE_IPV6=.*|ALT_DEFROUTE_IPV6=""|' "${tmp_conf}" > "${tmp_conf}.next"
+                mv "${tmp_conf}.next" "${tmp_conf}"
+                log_info "No ALT_DEFROUTE_IPV6 provided; IPv6 backup route injection will be skipped"
+            fi
+
+            mv "${tmp_conf}" /usr/local/etc/ha-singleton.conf
+            log_success "Installed universal configuration file"
         else
             log_warning "Configuration file already exists, not overwriting (use --cleanup to force)"
         fi
@@ -819,8 +931,15 @@ main() {
     fi
     
     log_info "WAN Interfaces: ${WAN_INTERFACES}"
+    log_info "WAN Interface Map: ${GENERATED_WAN_INTERFACE_MAP}"
     log_info "Git Branch: ${BRANCH_NAME}"
     log_info "Cleanup First: ${CLEANUP_FIRST}"
+    if [ -n "${ALT_GW_IPV4}" ]; then
+        log_info "ALT_DEFROUTE_IPV4 override: ${ALT_GW_IPV4}"
+    fi
+    if [ -n "${ALT_GW_IPV6}" ]; then
+        log_info "ALT_DEFROUTE_IPV6 override: ${ALT_GW_IPV6}"
+    fi
     echo
     
     # Cleanup existing installation if requested

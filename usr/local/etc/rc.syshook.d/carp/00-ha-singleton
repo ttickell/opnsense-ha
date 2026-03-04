@@ -1141,7 +1141,7 @@ manage_routes() {
         local ipv4_alt_route_exists=false
     fi
     
-    if [ "${ENABLE_IPV6}" = "yes" ] && check_route_exists "${ALT_DEFROUTE_IPV6}" "ipv6"; then
+    if [ "${ENABLE_IPV6}" = "yes" ] && [ -n "${ALT_DEFROUTE_IPV6}" ] && check_route_exists "${ALT_DEFROUTE_IPV6}" "ipv6"; then
         local ipv6_alt_route_exists=true
     else
         local ipv6_alt_route_exists=false
@@ -1159,7 +1159,7 @@ manage_routes() {
                 route delete default "${ALT_DEFROUTE_IPV4}" 2>/dev/null || true
             fi
             
-            if [ "${ENABLE_IPV6}" = "yes" ] && check_route_exists "${ALT_DEFROUTE_IPV6}" "ipv6"; then
+            if [ "${ENABLE_IPV6}" = "yes" ] && [ -n "${ALT_DEFROUTE_IPV6}" ] && check_route_exists "${ALT_DEFROUTE_IPV6}" "ipv6"; then
                 logger -p info -t ${TAG} "Removing IPv6 backup route via ${ALT_DEFROUTE_IPV6}"
                 route -6 delete default "${ALT_DEFROUTE_IPV6}" 2>/dev/null || true
             fi
@@ -1185,10 +1185,12 @@ manage_routes() {
             route add default "${ALT_DEFROUTE_IPV4}" 2>/dev/null || \
                 logger -p warning -t ${TAG} "Failed to add IPv4 backup route"
             
-            if [ "${ENABLE_IPV6}" = "yes" ]; then
+            if [ "${ENABLE_IPV6}" = "yes" ] && [ -n "${ALT_DEFROUTE_IPV6}" ]; then
                 logger -p info -t ${TAG} "Adding IPv6 backup default route via ${ALT_DEFROUTE_IPV6}"
                 route -6 add default "${ALT_DEFROUTE_IPV6}" 2>/dev/null || \
                     logger -p warning -t ${TAG} "Failed to add IPv6 backup route"
+            elif [ "${ENABLE_IPV6}" = "yes" ]; then
+                debug_log "ALT_DEFROUTE_IPV6 empty, skipping IPv6 backup default route injection"
             fi
             ;;
     esac
