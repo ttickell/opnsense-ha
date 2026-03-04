@@ -79,6 +79,40 @@
 
 ---
 
+## 🧹 Lab: Clean Up Proxima
+
+Changes made to the `proxima` Proxmox host for lab testing that must be undone when teardown occurs.
+
+### Permanent changes (survive reboot)
+
+- [x] **`vmbr0.212` OVS internal port** added to `/etc/network/interfaces`
+  - IP: `10.220.1.254/24`, VLAN 212 on `vmbr0`
+  - Purpose: gives proxima a management IP on the lab LAN so OPNsense GUI is reachable without SSH tunnels
+  - **To undo**: remove the `auto vmbr0.212` stanza from `/etc/network/interfaces` and run `ifdown vmbr0.212 && ovs-vsctl del-port vmbr0 vmbr0.212`
+
+### Temporary changes (lost on reboot — action only needed if proxima is NOT rebooted first)
+
+- [ ] **iptables NAT masquerade rule** — gives lab firewalls temporary internet access for `setup-firewall`
+  ```
+  iptables -t nat -A POSTROUTING -s 10.220.1.0/24 -j MASQUERADE
+  ```
+  **To undo**: `iptables -t nat -D POSTROUTING -s 10.220.1.0/24 -j MASQUERADE`
+
+- [ ] **iptables FORWARD rules** for lab LAN traffic
+  ```
+  iptables -A FORWARD -s 10.220.1.0/24 -j ACCEPT
+  iptables -A FORWARD -d 10.220.1.0/24 -m state --state RELATED,ESTABLISHED -j ACCEPT
+  ```
+  **To undo**:
+  ```
+  iptables -D FORWARD -s 10.220.1.0/24 -j ACCEPT
+  iptables -D FORWARD -d 10.220.1.0/24 -m state --state RELATED,ESTABLISHED -j ACCEPT
+  ```
+
+> Note: `net.ipv4.ip_forward` was already `1` on proxima before these changes — no action needed to restore it.
+
+---
+
 ## 🔄 Future Development Work
 
 ### Phase 0: OPNsense Standards Compliance (Future Upstream Contributions)
@@ -255,7 +289,7 @@ The v2.6 HA solution provides working HA capabilities:
 
 ---
 
-**Last Updated**: October 17, 2025  
+**Last Updated**: March 2, 2026  
 **Current Branch**: ghcwork  
 **Version**: v2.6 - Functional HA Implementation
 **Status**: Complete bidirectional HA failover with DHCP lease renewal - Functional and tested
