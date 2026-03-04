@@ -443,11 +443,15 @@ install_files_from_directory() {
     if [ -f "${source_dir}/usr/local/etc/ha-singleton.conf.example" ]; then
         # Always install/overwrite if cleanup was requested, otherwise respect existing file
         if [ "${CLEANUP_FIRST}" = "true" ] || [ ! -f "/usr/local/etc/ha-singleton.conf" ]; then
-            # Use universal configuration template
+            # Use universal configuration template with safe defaults.
+            # Route management must stay disabled until ALT_DEFROUTE_* is explicitly set
+            # to the peer firewall LAN addresses for this node.
             sed "s/vtnet1 vtnet2/${WAN_INTERFACES}/g" \
-                "${source_dir}/usr/local/etc/ha-singleton.conf.example" > \
+                "${source_dir}/usr/local/etc/ha-singleton.conf.example" | \
+                sed 's/^ENABLE_ROUTE_MANAGEMENT="yes"/ENABLE_ROUTE_MANAGEMENT="no"/' > \
                 /usr/local/etc/ha-singleton.conf
-            log_success "Installed universal configuration file"
+            log_success "Installed universal configuration file (route management disabled by default)"
+            log_warning "Set ALT_DEFROUTE_IPV4/ALT_DEFROUTE_IPV6 for this node before enabling ENABLE_ROUTE_MANAGEMENT"
         else
             log_warning "Configuration file already exists, not overwriting (use --cleanup to force)"
         fi
