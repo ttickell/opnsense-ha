@@ -254,15 +254,6 @@ if [ -z "${WAN_INTERFACES}" ]; then
     fi
 fi
 BRANCH_NAME="${BRANCH_NAME:-main}"
-GENERATED_WAN_INTERFACE_MAP="$(generate_wan_interface_map)"
-
-if [ -n "${ALT_GW_IPV4}" ] && ! validate_ipv4_address "${ALT_GW_IPV4}"; then
-    error_exit "Invalid IPv4 address passed to --alt-gw-ipv4: ${ALT_GW_IPV4}"
-fi
-
-if [ -n "${ALT_GW_IPV6}" ] && ! validate_ipv6_address "${ALT_GW_IPV6}"; then
-    error_exit "Invalid IPv6 address passed to --alt-gw-ipv6: ${ALT_GW_IPV6}"
-fi
 
 # Function to check if running on OPNsense
 check_opnsense() {
@@ -928,6 +919,16 @@ main() {
     # Check if running as root
     if [ "$(id -u)" -ne 0 ]; then
         error_exit "This script must be run as root"
+    fi
+
+    GENERATED_WAN_INTERFACE_MAP="$(generate_wan_interface_map)"
+
+    if [ -n "${ALT_GW_IPV4}" ] && ! validate_ipv4_address "${ALT_GW_IPV4}"; then
+        error_exit "Invalid IPv4 address passed to --alt-gw-ipv4: ${ALT_GW_IPV4}"
+    fi
+
+    if [ -n "${ALT_GW_IPV6}" ] && ! validate_ipv6_address "${ALT_GW_IPV6}"; then
+        error_exit "Invalid IPv6 address passed to --alt-gw-ipv6: ${ALT_GW_IPV6}"
     fi
     
     log_info "WAN Interfaces: ${WAN_INTERFACES}"
