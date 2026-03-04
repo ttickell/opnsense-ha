@@ -19,6 +19,38 @@ This guide documents lessons learned from debugging the `configctl` command synt
 - **Wasted Effort**: Authentication, process debugging, complex diagnostic scripts
 - **What Should Have Been Done First**: Basic syntax validation (5 minutes)
 
+## The Case Study: CARP Stable, Networking Broken After Install (March 2026)
+
+### The Problem
+- Fresh OPNsense pair with CARP worked correctly before custom scripts.
+- After installing custom HA scripts with template config values, local networking became unstable and recovery required rollback/snapshot.
+- Symptom pattern included bad backup-route behavior and inconsistent WAN state outcomes during transitions.
+
+### Root Cause
+- Not CARP election itself. CARP remained stable in isolated testing.
+- Primary risk was configuration safety: enabling route management before node-specific `ALT_DEFROUTE_*` values were correctly set for each node.
+
+### What We Proved (Isolation Sequence)
+1. Baseline CARP only: stable (`MASTER`/`BACKUP` as expected)
+2. Hook installed with all actions disabled: stable
+3. Route-management-only: stable when peer routes are correct
+4. Service-management-only: stable
+5. DHCP/interface-reconfigure-only: stable
+6. Boot helper (`ha-init-wan`) added last: no CARP election regression in staged tests
+
+### Operational Lessons
+- Do not test full install + full feature set in one step on a fresh pair.
+- Stage feature blocks and snapshot each known-good checkpoint.
+- On first install, keep `ENABLE_ROUTE_MANAGEMENT="no"` until `ALT_DEFROUTE_IPV4`/`ALT_DEFROUTE_IPV6` are explicitly set per node.
+
+### OPNsense Shell Gotcha
+- Remote root shell may be `csh`; `if [ ... ]` snippets can fail with syntax errors.
+- Prefer explicit POSIX shell for remote automation:
+
+```bash
+ssh root@host "sh -c '<commands>'"
+```
+
 ## Debug Protocol for OPNsense Issues
 
 ### � **CRITICAL REMINDER: DOCUMENTATION FIRST!**

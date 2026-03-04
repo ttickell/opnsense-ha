@@ -203,6 +203,27 @@ If the primary firewall must be replaced while you are remote:
 
 The `setup-firewall` script provides comprehensive automated installation of the HA solution with intelligent WAN interface detection and configuration.
 
+#### Safety Behavior (March 2026)
+
+To prevent first-install route poisoning, newly generated `/usr/local/etc/ha-singleton.conf` files now install with:
+
+```bash
+ENABLE_ROUTE_MANAGEMENT="no"
+```
+
+You must explicitly set node-specific peer routes before enabling route management:
+
+- Primary node: `ALT_DEFROUTE_IPV4` / `ALT_DEFROUTE_IPV6` must point to secondary LAN IPs
+- Secondary node: `ALT_DEFROUTE_IPV4` / `ALT_DEFROUTE_IPV6` must point to primary LAN IPs
+
+Then enable:
+
+```bash
+ENABLE_ROUTE_MANAGEMENT="yes"
+```
+
+This avoids incorrect backup default routes on fresh systems.
+
 #### Basic Installation
 
 ```bash
@@ -283,6 +304,7 @@ Examples:
    - Automatically substitutes WAN interface names in configuration
    - Sets appropriate file permissions
    - Creates universal configuration template
+   - Installs with route management disabled by default until peer backup routes are customized
 
 6. **Validation**:
    - Verifies all required files are installed
