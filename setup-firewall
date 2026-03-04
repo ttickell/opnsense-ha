@@ -258,7 +258,7 @@ cleanup_existing() {
     local files_to_remove="
         /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
         /usr/local/etc/rc.syshook.d/start/25-duid-override
-        /usr/local/etc/rc.syshook.d/start/10-ha-singleton-boot
+        /usr/local/etc/rc.d/ha-init-wan
         /usr/local/etc/ha-singleton.conf
         /usr/local/bin/ha-ipv6-integration.sh
         /usr/local/bin/debug_log
@@ -476,11 +476,11 @@ install_files_from_directory() {
     fi
     
     # Install early boot hook to prevent dual-active WAN on fresh reboot
-    if [ -f "${source_dir}/usr/local/etc/rc.syshook.d/start/10-ha-singleton-boot" ]; then
-        mkdir -p /usr/local/etc/rc.syshook.d/start
-        cp "${source_dir}/usr/local/etc/rc.syshook.d/start/10-ha-singleton-boot" /usr/local/etc/rc.syshook.d/start/
-        chmod 755 /usr/local/etc/rc.syshook.d/start/10-ha-singleton-boot
-        log_success "Installed boot initialization script"
+    if [ -f "${source_dir}/usr/local/etc/rc.d/ha-init-wan" ]; then
+        mkdir -p /usr/local/etc/rc.d
+        cp "${source_dir}/usr/local/etc/rc.d/ha-init-wan" /usr/local/etc/rc.d/
+        chmod 755 /usr/local/etc/rc.d/ha-init-wan
+        log_success "Installed WAN initialization rc.d service"
     fi
 }
 
@@ -658,7 +658,7 @@ show_post_install_info() {
     echo
     log_info "Configuration file: /usr/local/etc/ha-singleton.conf"
     log_info "Main script: /usr/local/etc/rc.syshook.d/carp/00-ha-singleton"
-    log_info "Boot initialization hook: /usr/local/etc/rc.syshook.d/start/10-ha-singleton-boot"
+    log_info "Boot initialization service: /usr/local/etc/rc.d/ha-init-wan"
     log_info "DUID override hook: /usr/local/etc/rc.syshook.d/start/25-duid-override"
     log_info "Backup location: ${BACKUP_DIR}"
     log_info "Installed from branch: ${BRANCH_NAME}"

@@ -1,0 +1,62 @@
+#!/bin/sh
+
+# PROVIDE: ha_init_wan
+# REQUIRE: carp
+# BEFORE: routing
+# KEYWORD: nojail
+
+# Initialize WAN interface state based on CARP role on boot
+# Prevents both firewalls from having WAN interfaces UP simultaneously
+
+. /etc/rc.subr
+
+name="ha_init_wan"
+rcvar="ha_init_wan_enable"
+start_cmd="ha_init_wan_start"
+stop_cmd=":"
+
+ha_init_wan_start() {
+    local log_tag="ha-init-wan"
+    
+    # Check if ha-singleton.conf exists
+    if [ ! -f "/usr/local/etc/ha-singleton.conf" ]; then
+        return 0
+    fi
+    
+    # Source configuration
+    . /usr/local/etc/ha-singleton.conf
+    
+    # If WAN_INTS not configured, nothing to do
+    if [ -z "$WAN_INTS" ]; then
+        return 0
+    fi
+    
+    # Detect CARP state
+    local carp_state=$(ifconfig | grep -i "carp:" | grep -o "MASTER\|BACKUP\|INIT" | head -1)
+    
+    if [ -z "$carp_state" ]; then
+        logger -t "$log_tag" "No CARP interface found, skipping WAN state initialization"
+        return 0
+    fi
+    
+    logger -t "$log_tag" "Detected CARP state: $carp_state"
+    
+    # If BACKUP, bring WAN interfaces down
+    if [ "$carp_state" = "BACKUP" ]; then
+        logger -t "$log_tag" "BACKUP state - bringing WAN interfaces DOWN"
+        
+        for iface in $WAN_INTS; do
+            if ifconfig "$iface" | grep -q "UP"; then
+                logger -t "$log_tag" "Bringing down: $iface"
+                ifconfig "$iface" down
+            fi
+        done
+        
+        logger -t "$log_tag" "WAN initialization complete (DOWN for BACKUP role)"
+    else
+        logger -t "$log_tag" "MASTER/INIT state - WAN interfaces left UP"
+    fi
+}
+
+load_rc_config $name
+run_rc_command "$0"
