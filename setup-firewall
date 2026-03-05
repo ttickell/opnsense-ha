@@ -2,13 +2,13 @@
 
 # OPNsense HA Singleton Setup Script
 # Comprehensive installer for HA customizations with CARP flapping fixes
-# Version: 2.7 - Added DHCPv6 DUID override system for HA consistency
+# Version: 2.8 - Enforce required IPv4/IPv6 peer backup gateways for HA installs
 
 set -e  # Exit on any error
 
 # Configuration variables
 SCRIPT_NAME="$(basename "$0")"
-SCRIPT_VERSION="2.7"
+SCRIPT_VERSION="2.8"
 GITHUB_REPO="https://github.com/ttickell/opnsense-ha.git"
 WORKDIR="/tmp/opnsense-ha-setup"
 BACKUP_DIR="/tmp/ha-setup-backup-$(date +%Y%m%d-%H%M%S)"
@@ -79,8 +79,8 @@ usage() {
     echo "Options:"
     echo "  --cleanup, -c         Clean existing HA installation before installing"
     echo "  --fix-flapping, -f    Fix CARP flapping by disabling conflicting scripts (no install)"
-    echo "  --alt-gw-ipv4 <ip>    Peer firewall LAN IPv4 gateway for BACKUP default route"
-    echo "  --alt-gw-ipv6 <ip>    Optional peer firewall LAN IPv6 gateway for BACKUP default route"
+    echo "  --alt-gw-ipv4 <ip>    Required peer firewall LAN IPv4 gateway for BACKUP default route"
+    echo "  --alt-gw-ipv6 <ip>    Required peer firewall LAN IPv6 gateway for BACKUP default route"
     echo "  --test, -t           Test existing configuration (no install)"
     echo "  --help, -h           Show this help message"
     echo
@@ -97,7 +97,6 @@ usage() {
     echo "  $0 --test                    # Test existing configuration"
     echo "  $0 vtnet1                    # Single WAN interface, main branch"
     echo "  $0 \"vtnet1 vtnet2\"           # Multiple WAN interfaces, main branch"
-    echo "  $0 --alt-gw-ipv4 10.220.1.3 \"vtnet0 vtnet1\""
     echo "  $0 --alt-gw-ipv4 10.220.1.3 --alt-gw-ipv6 fd03:17ac:e938:4200::3 \"vtnet0 vtnet1\""
     echo "  $0 vtnet1 ghcwork            # Single WAN interface, ghcwork branch"
     echo "  $0 --cleanup \"vtnet1 vtnet2\" develop  # Clean first, multi-WAN, develop branch"
@@ -160,6 +159,9 @@ BRANCH_NAME=""
 ALT_GW_IPV4=""
 ALT_GW_IPV6=""
 GENERATED_WAN_INTERFACE_MAP=""
+LOCAL_LAN_INTERFACE=""
+LOCAL_CARP_IPV4=""
+LOCAL_CARP_IPV6=""
 
 # Parse options and arguments
 while [ $# -gt 0 ]; do
@@ -392,6 +394,245 @@ validate_ipv6_address() {
     return 0
 }
 
+netmask_to_prefix_ipv4() {
+    local netmask="$1"
+    local prefix=0
+
+    if echo "${netmask}" | grep -q '^0x'; then
+        local hex="${netmask#0x}"
+        local nibble=""
+
+        while [ -n "${hex}" ]; do
+            nibble="${hex%${hex#?}}"
+            hex="${hex#?}"
+
+            case "${nibble}" in
+                0) prefix=$((prefix + 0)) ;;
+                1|2|4|8) prefix=$((prefix + 1)) ;;
+                3|5|6|9|a|A|c|C) prefix=$((prefix + 2)) ;;
+                7|b|B|d|D|e|E) prefix=$((prefix + 3)) ;;
+                f|F) prefix=$((prefix + 4)) ;;
+                *)
+                    echo ""
+                    return 1
+                    ;;
+            esac
+        done
+
+        echo "${prefix}"
+        return 0
+    fi
+
+    local old_ifs="${IFS}"
+    IFS='.'
+    set -- ${netmask}
+    IFS="${old_ifs}"
+
+    for octet in "$@"; do
+        case "${octet}" in
+            255) prefix=$((prefix + 8)) ;;
+            254) prefix=$((prefix + 7)) ;;
+            252) prefix=$((prefix + 6)) ;;
+            248) prefix=$((prefix + 5)) ;;
+            240) prefix=$((prefix + 4)) ;;
+            224) prefix=$((prefix + 3)) ;;
+            192) prefix=$((prefix + 2)) ;;
+            128) prefix=$((prefix + 1)) ;;
+            0) ;;
+            *)
+                echo ""
+                return 1
+                ;;
+        esac
+    done
+
+    echo "${prefix}"
+    return 0
+}
+
+ip_in_cidr() {
+    local ip="$1"
+    local network_ip="$2"
+    local prefix="$3"
+
+    php -r '
+$ip = $argv[1];
+$net = $argv[2];
+$prefix = (int)$argv[3];
+$ipBytes = @inet_pton($ip);
+$netBytes = @inet_pton($net);
+if ($ipBytes === false || $netBytes === false || strlen($ipBytes) !== strlen($netBytes)) {
+    exit(2);
+}
+$maxPrefix = strlen($ipBytes) * 8;
+if ($prefix < 0 || $prefix > $maxPrefix) {
+    exit(2);
+}
+$full = intdiv($prefix, 8);
+$rem = $prefix % 8;
+for ($i = 0; $i < $full; $i++) {
+    if (ord($ipBytes[$i]) !== ord($netBytes[$i])) {
+        exit(1);
+    }
+}
+if ($rem > 0) {
+    $mask = (0xFF << (8 - $rem)) & 0xFF;
+    if ((ord($ipBytes[$full]) & $mask) !== (ord($netBytes[$full]) & $mask)) {
+        exit(1);
+    }
+}
+exit(0);
+' "${ip}" "${network_ip}" "${prefix}" >/dev/null 2>&1
+}
+
+inspect_interface_for_gateway() {
+    local iface="$1"
+    local family="$2"
+    local alt_gw="$3"
+    local line=""
+    local matches=0
+    local carp_matches=0
+    local carp_ip=""
+
+    while IFS= read -r line; do
+        set -- ${line}
+
+        if [ "${family}" = "inet" ] && [ "${1}" = "inet" ]; then
+            local ip="${2}"
+            local netmask=""
+            local prefix=""
+            local token=""
+            local next_is_netmask="false"
+
+            for token in ${line}; do
+                if [ "${next_is_netmask}" = "true" ]; then
+                    netmask="${token}"
+                    next_is_netmask="false"
+                elif [ "${token}" = "netmask" ]; then
+                    next_is_netmask="true"
+                fi
+            done
+
+            if [ -n "${netmask}" ]; then
+                prefix="$(netmask_to_prefix_ipv4 "${netmask}" 2>/dev/null || true)"
+                if [ -n "${prefix}" ] && ip_in_cidr "${alt_gw}" "${ip}" "${prefix}"; then
+                    matches=$((matches + 1))
+                    if echo "${line}" | grep -q "vhid"; then
+                        carp_matches=$((carp_matches + 1))
+                        carp_ip="${ip}"
+                    fi
+                fi
+            fi
+        fi
+
+        if [ "${family}" = "inet6" ] && [ "${1}" = "inet6" ]; then
+            local ip6="${2%%\%*}"
+            local prefix6=""
+            local token6=""
+            local next_is_prefix="false"
+
+            for token6 in ${line}; do
+                if [ "${next_is_prefix}" = "true" ]; then
+                    prefix6="${token6}"
+                    next_is_prefix="false"
+                elif [ "${token6}" = "prefixlen" ]; then
+                    next_is_prefix="true"
+                fi
+            done
+
+            if [ -n "${prefix6}" ] && ip_in_cidr "${alt_gw}" "${ip6}" "${prefix6}"; then
+                matches=$((matches + 1))
+                if echo "${line}" | grep -q "vhid"; then
+                    carp_matches=$((carp_matches + 1))
+                    carp_ip="${ip6}"
+                fi
+            fi
+        fi
+    done <<EOF
+$(ifconfig "${iface}" 2>/dev/null)
+EOF
+
+    echo "${matches}|${carp_matches}|${carp_ip}"
+}
+
+validate_lan_subnet_and_carp() {
+    log_info "Validating LAN subnet and CARP topology against provided alternate gateways"
+
+    local interfaces="$(ifconfig -l 2>/dev/null || true)"
+    local iface=""
+    local result=""
+    local matches=""
+    local carp_matches=""
+    local carp_ip=""
+    local candidate_iface=""
+    local candidate_count=0
+
+    for iface in ${interfaces}; do
+        result="$(inspect_interface_for_gateway "${iface}" "inet" "${ALT_GW_IPV4}")"
+        matches="$(echo "${result}" | cut -d'|' -f1)"
+        carp_matches="$(echo "${result}" | cut -d'|' -f2)"
+        carp_ip="$(echo "${result}" | cut -d'|' -f3)"
+
+        if [ "${matches}" -ge 2 ] 2>/dev/null && [ "${carp_matches}" -ge 1 ] 2>/dev/null; then
+            candidate_iface="${iface}"
+            LOCAL_CARP_IPV4="${carp_ip}"
+            candidate_count=$((candidate_count + 1))
+        fi
+    done
+
+    if [ "${candidate_count}" -eq 0 ]; then
+        error_exit "No interface has at least two IPv4 addresses in ALT_DEFROUTE_IPV4 subnet (${ALT_GW_IPV4}) including a CARP address"
+    fi
+
+    if [ "${candidate_count}" -gt 1 ]; then
+        error_exit "Multiple interfaces match ALT_DEFROUTE_IPV4 subnet (${ALT_GW_IPV4}); unable to determine LAN interface uniquely"
+    fi
+
+    LOCAL_LAN_INTERFACE="${candidate_iface}"
+
+    result="$(inspect_interface_for_gateway "${LOCAL_LAN_INTERFACE}" "inet6" "${ALT_GW_IPV6}")"
+    matches="$(echo "${result}" | cut -d'|' -f1)"
+    carp_matches="$(echo "${result}" | cut -d'|' -f2)"
+    carp_ip="$(echo "${result}" | cut -d'|' -f3)"
+
+    if [ "${matches}" -lt 2 ] 2>/dev/null || [ "${carp_matches}" -lt 1 ] 2>/dev/null; then
+        error_exit "Interface ${LOCAL_LAN_INTERFACE} does not have required IPv6 LAN setup for ALT_DEFROUTE_IPV6 (${ALT_GW_IPV6}); need at least two IPv6 addresses in-subnet including a CARP address"
+    fi
+
+    LOCAL_CARP_IPV6="${carp_ip}"
+
+    if [ -z "${LOCAL_CARP_IPV4}" ] || [ -z "${LOCAL_CARP_IPV6}" ]; then
+        error_exit "Failed to resolve local CARP addresses for LAN interface ${LOCAL_LAN_INTERFACE}"
+    fi
+
+    log_success "Local LAN validation passed on ${LOCAL_LAN_INTERFACE}"
+    log_info "Local CARP IPv4: ${LOCAL_CARP_IPV4}"
+    log_info "Local CARP IPv6: ${LOCAL_CARP_IPV6}"
+}
+
+validate_peer_ssh_carp() {
+    log_info "Validating peer CARP visibility over SSH (${ALT_GW_IPV4})"
+
+    if ! command -v ssh >/dev/null 2>&1; then
+        error_exit "ssh command not found; cannot validate peer LAN/CARP configuration"
+    fi
+
+    local peer_ifconfig=""
+    if ! peer_ifconfig="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 root@${ALT_GW_IPV4} ifconfig 2>/dev/null)"; then
+        error_exit "SSH to peer host ${ALT_GW_IPV4} failed. Ensure SSH keys are configured before installation."
+    fi
+
+    if ! echo "${peer_ifconfig}" | awk -v ip="${LOCAL_CARP_IPV4}" '$1=="inet" && $2==ip && $0 ~ /vhid/ {found=1} END {exit(found?0:1)}'; then
+        error_exit "Peer does not show matching CARP IPv4 (${LOCAL_CARP_IPV4}) on its LAN configuration"
+    fi
+
+    if ! echo "${peer_ifconfig}" | awk -v ip="${LOCAL_CARP_IPV6}" '$1=="inet6" && $2 ~ ("^" ip "(%|$)") && $0 ~ /vhid/ {found=1} END {exit(found?0:1)}'; then
+        error_exit "Peer does not show matching CARP IPv6 (${LOCAL_CARP_IPV6}) on its LAN configuration"
+    fi
+
+    log_success "Peer SSH LAN/CARP validation passed"
+}
+
 generate_wan_interface_map() {
     local idx=1
     local map=""
@@ -530,28 +771,17 @@ install_files_from_directory() {
                 sed "s|^WAN_INTERFACE_MAP=.*|WAN_INTERFACE_MAP=\"${escaped_wan_map}\"|" > \
                 "${tmp_conf}"
 
-            if [ -n "${ALT_GW_IPV4}" ]; then
-                local escaped_alt_gw_ipv4="$(escape_sed_replacement "${ALT_GW_IPV4}")"
-                sed "s|^ALT_DEFROUTE_IPV4=.*|ALT_DEFROUTE_IPV4=\"${escaped_alt_gw_ipv4}\"|" "${tmp_conf}" > "${tmp_conf}.next"
-                mv "${tmp_conf}.next" "${tmp_conf}"
+            local escaped_alt_gw_ipv4="$(escape_sed_replacement "${ALT_GW_IPV4}")"
+            sed "s|^ALT_DEFROUTE_IPV4=.*|ALT_DEFROUTE_IPV4=\"${escaped_alt_gw_ipv4}\"|" "${tmp_conf}" > "${tmp_conf}.next"
+            mv "${tmp_conf}.next" "${tmp_conf}"
 
-                sed 's/^ENABLE_ROUTE_MANAGEMENT="no"/ENABLE_ROUTE_MANAGEMENT="yes"/' "${tmp_conf}" > "${tmp_conf}.next"
-                mv "${tmp_conf}.next" "${tmp_conf}"
-                log_success "Applied ALT_DEFROUTE_IPV4 override and enabled route management"
-            else
-                log_warning "ALT_DEFROUTE_IPV4 not provided; route management remains disabled"
-            fi
+            local escaped_alt_gw_ipv6="$(escape_sed_replacement "${ALT_GW_IPV6}")"
+            sed "s|^ALT_DEFROUTE_IPV6=.*|ALT_DEFROUTE_IPV6=\"${escaped_alt_gw_ipv6}\"|" "${tmp_conf}" > "${tmp_conf}.next"
+            mv "${tmp_conf}.next" "${tmp_conf}"
 
-            if [ -n "${ALT_GW_IPV6}" ]; then
-                local escaped_alt_gw_ipv6="$(escape_sed_replacement "${ALT_GW_IPV6}")"
-                sed "s|^ALT_DEFROUTE_IPV6=.*|ALT_DEFROUTE_IPV6=\"${escaped_alt_gw_ipv6}\"|" "${tmp_conf}" > "${tmp_conf}.next"
-                mv "${tmp_conf}.next" "${tmp_conf}"
-                log_success "Applied ALT_DEFROUTE_IPV6 override"
-            else
-                sed 's|^ALT_DEFROUTE_IPV6=.*|ALT_DEFROUTE_IPV6=""|' "${tmp_conf}" > "${tmp_conf}.next"
-                mv "${tmp_conf}.next" "${tmp_conf}"
-                log_info "No ALT_DEFROUTE_IPV6 provided; IPv6 backup route injection will be skipped"
-            fi
+            sed 's/^ENABLE_ROUTE_MANAGEMENT="no"/ENABLE_ROUTE_MANAGEMENT="yes"/' "${tmp_conf}" > "${tmp_conf}.next"
+            mv "${tmp_conf}.next" "${tmp_conf}"
+            log_success "Applied ALT_DEFROUTE_IPV4/ALT_DEFROUTE_IPV6 overrides and enabled route management"
 
             mv "${tmp_conf}" /usr/local/etc/ha-singleton.conf
             log_success "Installed universal configuration file"
@@ -923,24 +1153,31 @@ main() {
 
     GENERATED_WAN_INTERFACE_MAP="$(generate_wan_interface_map)"
 
-    if [ -n "${ALT_GW_IPV4}" ] && ! validate_ipv4_address "${ALT_GW_IPV4}"; then
+    if [ -z "${ALT_GW_IPV4}" ]; then
+        error_exit "--alt-gw-ipv4 is required for HA installation"
+    fi
+
+    if [ -z "${ALT_GW_IPV6}" ]; then
+        error_exit "--alt-gw-ipv6 is required for HA installation"
+    fi
+
+    if ! validate_ipv4_address "${ALT_GW_IPV4}"; then
         error_exit "Invalid IPv4 address passed to --alt-gw-ipv4: ${ALT_GW_IPV4}"
     fi
 
-    if [ -n "${ALT_GW_IPV6}" ] && ! validate_ipv6_address "${ALT_GW_IPV6}"; then
+    if ! validate_ipv6_address "${ALT_GW_IPV6}"; then
         error_exit "Invalid IPv6 address passed to --alt-gw-ipv6: ${ALT_GW_IPV6}"
     fi
+
+    validate_lan_subnet_and_carp
+    validate_peer_ssh_carp
     
     log_info "WAN Interfaces: ${WAN_INTERFACES}"
     log_info "WAN Interface Map: ${GENERATED_WAN_INTERFACE_MAP}"
     log_info "Git Branch: ${BRANCH_NAME}"
     log_info "Cleanup First: ${CLEANUP_FIRST}"
-    if [ -n "${ALT_GW_IPV4}" ]; then
-        log_info "ALT_DEFROUTE_IPV4 override: ${ALT_GW_IPV4}"
-    fi
-    if [ -n "${ALT_GW_IPV6}" ]; then
-        log_info "ALT_DEFROUTE_IPV6 override: ${ALT_GW_IPV6}"
-    fi
+    log_info "ALT_DEFROUTE_IPV4 override: ${ALT_GW_IPV4}"
+    log_info "ALT_DEFROUTE_IPV6 override: ${ALT_GW_IPV6}"
     echo
     
     # Cleanup existing installation if requested
