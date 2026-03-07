@@ -56,6 +56,8 @@ ENABLE_IPV6_RA_PACKET_GUARD="yes"   # Block outbound RA on BACKUP/INIT; remove o
 IPV6_RA_PACKET_GUARD_ANCHOR="ha/ipv6_ra_guard" # pf anchor used for RA guard rule
 ENABLE_RADVD_BACKUP_WATCHDOG="yes"  # Continuously stop radvd on BACKUP/INIT
 RADVD_BACKUP_WATCHDOG_INTERVAL="2"  # Seconds between radvd kill checks
+ENABLE_WAN_BACKUP_WATCHDOG="yes"    # Continuously keep WAN interfaces down on BACKUP/INIT
+WAN_BACKUP_WATCHDOG_INTERVAL="3"    # Seconds between WAN down checks
 CARP_PREEMPT_VALUE="1"              # Enable preemptive CARP failback (1=yes, 0=no)
 ENABLE_CARP_PREEMPT_ENFORCE="yes"   # Enforce net.inet.carp.preempt at CARP events
 PFSYNC_CARP_DEMOTION_FACTOR="240"   # Keep non-zero; 240 is OPNsense default

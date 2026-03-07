@@ -78,6 +78,9 @@ IPV6_RA_PACKET_GUARD_ANCHOR="ha/ipv6_ra_guard"
 ENABLE_RADVD_BACKUP_WATCHDOG="yes"      # Keep radvd stopped while BACKUP/INIT
 RADVD_BACKUP_WATCHDOG_INTERVAL="2"      # Seconds between radvd kill checks
 RADVD_BACKUP_WATCHDOG_PIDFILE="/var/run/ha-radvd-backup-watchdog.pid"
+ENABLE_WAN_BACKUP_WATCHDOG="yes"        # Keep WAN interfaces down while BACKUP/INIT
+WAN_BACKUP_WATCHDOG_INTERVAL="3"        # Seconds between WAN down checks
+WAN_BACKUP_WATCHDOG_PIDFILE="/var/run/ha-wan-backup-watchdog.pid"
 
 DEBUG="no"
 
@@ -434,6 +437,57 @@ stop_radvd_backup_watchdog() {
     fi
 }
 
+start_wan_backup_watchdog() {
+    if [ "${ENABLE_WAN_BACKUP_WATCHDOG}" != "yes" ]; then
+        return 0
+    fi
+
+    if [ -f "${WAN_BACKUP_WATCHDOG_PIDFILE}" ]; then
+        local existing_pid=$(cat "${WAN_BACKUP_WATCHDOG_PIDFILE}" 2>/dev/null || true)
+        if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    logger -p warning -t ${TAG} "Starting BACKUP WAN watchdog"
+    (
+        while :; do
+            for WAN_INT in ${WAN_INTS}; do
+                if ifconfig "${WAN_INT}" >/dev/null 2>&1 && [ "$(get_interface_status "${WAN_INT}")" = "UP" ]; then
+                    configctl interface linkup stop "${WAN_INT}" >/dev/null 2>&1 || true
+                    ifconfig "${WAN_INT}" down >/dev/null 2>&1 || true
+                fi
+            done
+            sleep "${WAN_BACKUP_WATCHDOG_INTERVAL:-3}"
+        done
+    ) >/dev/null 2>&1 &
+    echo $! > "${WAN_BACKUP_WATCHDOG_PIDFILE}"
+}
+
+stop_wan_backup_watchdog() {
+    if [ -f "${WAN_BACKUP_WATCHDOG_PIDFILE}" ]; then
+        local watchdog_pid=$(cat "${WAN_BACKUP_WATCHDOG_PIDFILE}" 2>/dev/null || true)
+        if [ -n "${watchdog_pid}" ] && kill -0 "${watchdog_pid}" 2>/dev/null; then
+            logger -p info -t ${TAG} "Stopping BACKUP WAN watchdog"
+            kill "${watchdog_pid}" >/dev/null 2>&1 || true
+        fi
+        rm -f "${WAN_BACKUP_WATCHDOG_PIDFILE}" >/dev/null 2>&1 || true
+    fi
+}
+
+manage_backup_watchdogs() {
+    case "${CARP_STATUS}" in
+        "MASTER")
+            stop_wan_backup_watchdog
+            stop_radvd_backup_watchdog
+            ;;
+        "BACKUP")
+            start_wan_backup_watchdog
+            start_radvd_backup_watchdog
+            ;;
+    esac
+}
+
 manage_ipv6_router_advertisements() {
     if [ "${ENABLE_IPV6_HA_MANAGEMENT}" != "yes" ] || [ "${ENABLE_IPV6_ROUTER_ADVERTISEMENTS}" != "yes" ]; then
         return 0
@@ -448,13 +502,9 @@ manage_ipv6_router_advertisements() {
             # Enable router advertisements on MASTER
             logger -p info -t ${TAG} "Enabling IPv6 router advertisements (MASTER)"
             
-            # Trigger router advertisement daemon reconfiguration 
-            # Note: radvd is managed by OPNsense's radvd_configure_do() function
-            logger -p info -t ${TAG} "Triggering router advertisement daemon reconfiguration"
-            if [ -x "/usr/local/etc/rc.configure_interface" ]; then
-                # Trigger full interface reconfiguration which includes radvd restart
-                /usr/local/etc/rc.configure_interface "${opnsense_interface}" >/dev/null 2>&1 || \
-                    logger -p warning -t ${TAG} "Failed to reconfigure interface for radvd restart"
+            # Ensure radvd is running on MASTER even if a stale watchdog previously suppressed it.
+            if ! check_service_status "radvd"; then
+                start_service "radvd"
             fi
             
             # Ensure IPv6 forwarding is enabled for MASTER
@@ -1475,6 +1525,9 @@ perform_health_checks() {
 # Main execution
 main() {
     logger -p info -t ${TAG} "Starting HA failover processing"
+
+    # Ensure role-specific watchdogs are aligned immediately (before any service operations).
+    manage_backup_watchdogs
     
     # Perform health checks
     if ! perform_health_checks; then
