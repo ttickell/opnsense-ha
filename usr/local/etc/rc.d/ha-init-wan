@@ -59,4 +59,4 @@ ha_init_wan_start() {
 }
 
 load_rc_config $name
-run_rc_command "$0"
+run_rc_command "$@"
