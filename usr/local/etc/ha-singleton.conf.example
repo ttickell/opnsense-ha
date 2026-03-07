@@ -52,6 +52,10 @@ SYNC_IPV6_STATE="yes"               # Sync IPv6 state between nodes
 INTERFACE_SETTLE_TIME="2"           # Seconds to wait after interface changes
 SERVICE_STARTUP_DELAY="1"           # Seconds between service starts
 HEALTH_CHECK_ENABLED="yes"          # Enable health checking
+ENABLE_IPV6_RA_PACKET_GUARD="yes"   # Block outbound RA on BACKUP/INIT; remove on MASTER
+IPV6_RA_PACKET_GUARD_ANCHOR="ha/ipv6_ra_guard" # pf anchor used for RA guard rule
+ENABLE_RADVD_BACKUP_WATCHDOG="yes"  # Continuously stop radvd on BACKUP/INIT
+RADVD_BACKUP_WATCHDOG_INTERVAL="2"  # Seconds between radvd kill checks
 CARP_PREEMPT_VALUE="1"              # Enable preemptive CARP failback (1=yes, 0=no)
 ENABLE_CARP_PREEMPT_ENFORCE="yes"   # Enforce net.inet.carp.preempt at CARP events
 PFSYNC_CARP_DEMOTION_FACTOR="240"   # Keep non-zero; 240 is OPNsense default
