@@ -1,0 +1,39 @@
+# checkset-nptv6.yml — runtime configuration for dhcp6c-checkset-nptv6
+#
+# 1) Copy to /usr/local/etc/checkset-nptv6.yml
+# 2) Fill required values
+# 3) Keep real file out of source control
+
+checkset-nptv6-conf-version: 1
+
+# REQUIRED: OPNsense API endpoint (no trailing slash)
+api-base: "https://127.0.0.1/api"
+api-key: "YOUR-API-KEY"
+api-secret: "YOUR-API-SECRET"
+
+# OPTIONAL: disable TLS certificate verification for self-signed local certs.
+# SECURITY: use only for local trusted endpoint access (e.g., 127.0.0.1).
+api-verify-tls: false
+
+# OPTIONAL: custom CA bundle path instead of disabling verification.
+# ca-bundle: "/usr/local/etc/ssl/your-ca.pem"
+
+# REQUIRED: output file from /usr/local/bin/dhcp6c-prefix-json
+# Default for this repo's prefix-json implementation:
+dhcp6c-pds-file: "/var/db/ipv6-ha/dhcp6c-delegations.json"
+
+# REQUIRED: site ULA /48
+ipv6-ula: "fd03:17ac:e938::/48"
+
+lan-interfaces:
+  LAN:
+    interface: igc2
+    mappings:
+      WAN:
+        pd-id: 0
+        pd-sla: 0
+        pd-len: 0
+      WAN2:
+        pd-id: 2
+        pd-sla: 0
+        pd-len: 0

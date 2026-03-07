@@ -14,6 +14,8 @@
 TAG="dhcp6c-ha-script"
 HA_IPV6_STATE_DIR="/var/db/ipv6-ha"
 DELEGATION_STATE_FILE="${HA_IPV6_STATE_DIR}/delegations.json"
+PREFIX_JSON_SCRIPT="/usr/local/bin/dhcp6c-prefix-json"
+NPTV6_CHECKSET_SCRIPT="/usr/local/bin/dhcp6c-checkset-nptv6"
 
 # Ensure state directory exists
 mkdir -p "${HA_IPV6_STATE_DIR}"
@@ -45,6 +47,33 @@ log_event() {
 }
 
 log_event "info" "DHCPv6 event: ${REASON} on ${INTERFACE} (${PROVIDER})"
+
+run_prefix_and_nptv6_sync() {
+    if [ -x "${PREFIX_JSON_SCRIPT}" ]; then
+        if "${PREFIX_JSON_SCRIPT}" >/dev/null 2>&1; then
+            log_event "info" "Updated prefix delegation JSON state"
+        else
+            log_event "warning" "Failed to update prefix delegation JSON state"
+            return 1
+        fi
+    else
+        log_event "warning" "Prefix JSON script missing: ${PREFIX_JSON_SCRIPT}"
+        return 1
+    fi
+
+    if [ -x "${NPTV6_CHECKSET_SCRIPT}" ]; then
+        if "${NPTV6_CHECKSET_SCRIPT}" >/dev/null 2>&1; then
+            log_event "info" "NPTv6 reconciliation completed"
+        else
+            log_event "warning" "NPTv6 reconciliation failed"
+            return 1
+        fi
+    else
+        log_event "info" "NPTv6 checkset script not installed; skipping"
+    fi
+
+    return 0
+}
 
 # Validate required environment
 if [ -z "$INTERFACE" ]; then
@@ -140,6 +169,9 @@ SOLICIT|INFOREQ|REBIND|RENEW|REQUEST)
     fi
 
     /usr/local/sbin/configctl -d interface newipv6 ${INTERFACE} ${FORCE}
+
+    # Trigger prefix/NPTv6 sync when new delegations are assigned
+    run_prefix_and_nptv6_sync || true
     
     # Trigger HA IPv6 delegation processing (Phase 2 enhancement)
     if [ -x "/usr/local/bin/ipv6-ha-manager.py" ]; then
@@ -159,6 +191,12 @@ EXIT|RELEASE)
     /usr/local/sbin/ifctl -i ${INTERFACE} -6pd
 
     /usr/local/sbin/configctl -d interface newipv6 ${INTERFACE}
+
+    # Keep delegated-prefix state in sync when leases are released
+    if [ -x "${PREFIX_JSON_SCRIPT}" ]; then
+        "${PREFIX_JSON_SCRIPT}" >/dev/null 2>&1 || \
+            log_event "warning" "Failed to update prefix delegation JSON state after ${REASON}"
+    fi
     ;;
 
 *)

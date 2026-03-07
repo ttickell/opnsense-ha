@@ -50,6 +50,11 @@ create_backup() {
         /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
         /usr/local/etc/ha-singleton.conf
         /usr/local/bin/ha-ipv6-integration.sh
+        /usr/local/bin/dhcp6c-wan-script.sh
+        /usr/local/bin/dhcp6c_wan_custom.sh
+        /usr/local/bin/dhcp6c-prefix-json
+        /usr/local/bin/dhcp6c-checkset-nptv6
+        /usr/local/etc/checkset-nptv6.yml.example
         /usr/local/bin/debug_log
         /usr/local/etc/rc.carp_service_status.d/wan_connectivity
     "
@@ -78,6 +83,11 @@ cleanup_files() {
         /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
         /usr/local/etc/ha-singleton.conf
         /usr/local/bin/ha-ipv6-integration.sh
+        /usr/local/bin/dhcp6c-wan-script.sh
+        /usr/local/bin/dhcp6c_wan_custom.sh
+        /usr/local/bin/dhcp6c-prefix-json
+        /usr/local/bin/dhcp6c-checkset-nptv6
+        /usr/local/etc/checkset-nptv6.yml.example
         /usr/local/bin/debug_log
         /usr/local/etc/rc.carp_service_status.d/wan_connectivity
     "
@@ -143,6 +153,11 @@ show_status() {
         /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
         /usr/local/etc/ha-singleton.conf
         /usr/local/bin/ha-ipv6-integration.sh
+        /usr/local/bin/dhcp6c-wan-script.sh
+        /usr/local/bin/dhcp6c_wan_custom.sh
+        /usr/local/bin/dhcp6c-prefix-json
+        /usr/local/bin/dhcp6c-checkset-nptv6
+        /usr/local/etc/checkset-nptv6.yml.example
         /usr/local/bin/debug_log
         /usr/local/etc/rc.carp_service_status.d/wan_connectivity
     "

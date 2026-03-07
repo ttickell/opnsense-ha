@@ -286,6 +286,11 @@ cleanup_existing() {
         /usr/local/etc/rc.d/ha-init-wan
         /usr/local/etc/ha-singleton.conf
         /usr/local/bin/ha-ipv6-integration.sh
+        /usr/local/bin/dhcp6c-wan-script.sh
+        /usr/local/bin/dhcp6c_wan_custom.sh
+        /usr/local/bin/dhcp6c-prefix-json
+        /usr/local/bin/dhcp6c-checkset-nptv6
+        /usr/local/etc/checkset-nptv6.yml.example
         /usr/local/bin/debug_log
     "
     
@@ -819,6 +824,22 @@ install_files_from_directory() {
         cp "${source_dir}/usr/local/bin/ha-ipv6-integration.sh" /usr/local/bin/
         chmod 755 /usr/local/bin/ha-ipv6-integration.sh
         log_success "Installed IPv6 integration script"
+    fi
+
+    # Install DHCPv6 prefix and NPTv6 helper scripts
+    for script in dhcp6c-wan-script.sh dhcp6c_wan_custom.sh dhcp6c-prefix-json dhcp6c-checkset-nptv6; do
+        if [ -f "${source_dir}/usr/local/bin/${script}" ]; then
+            cp "${source_dir}/usr/local/bin/${script}" /usr/local/bin/
+            chmod 755 "/usr/local/bin/${script}"
+            log_success "Installed ${script}"
+        fi
+    done
+
+    # Install NPTv6 configuration template
+    if [ -f "${source_dir}/usr/local/etc/checkset-nptv6.yml.example" ]; then
+        cp "${source_dir}/usr/local/etc/checkset-nptv6.yml.example" /usr/local/etc/
+        chmod 644 /usr/local/etc/checkset-nptv6.yml.example
+        log_success "Installed checkset-nptv6.yml.example"
     fi
     
     # Install debug logging utility
