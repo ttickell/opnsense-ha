@@ -74,6 +74,12 @@ IPV6_RECOVERY_RETRY_DELAY="4"           # Seconds to wait after each recovery at
 
 DEBUG="no"
 
+# CARP/pfsync demotion controls
+CARP_PREEMPT_VALUE="1"               # 1 enables preemptive failback behavior
+ENABLE_CARP_PREEMPT_ENFORCE="yes"    # Enforce net.inet.carp.preempt on every CARP event
+PFSYNC_CARP_DEMOTION_FACTOR="240"       # 240 is OPNsense default; do not use 0
+ENABLE_CARP_DEMOTION_RECOVERY="yes"     # Clear stale demotion on MASTER when pfsync is healthy
+
 # Load configuration file if it exists
 if [ -f "${CONFIG_FILE}" ]; then
     . "${CONFIG_FILE}"
@@ -136,12 +142,42 @@ debug_log() {
 
 # System tunable initialization
 init_system_tunables() {
-    # Disable PFSYNC CARP demotion to prevent flapping during primary failures
+    if [ "${ENABLE_CARP_PREEMPT_ENFORCE}" = "yes" ]; then
+        local desired_preempt=${CARP_PREEMPT_VALUE:-1}
+        local current_preempt=$(sysctl -n net.inet.carp.preempt 2>/dev/null || echo "1")
+
+        if [ "${current_preempt}" != "${desired_preempt}" ]; then
+            logger -p info -t ${TAG} "Setting CARP preempt to ${desired_preempt} (was ${current_preempt})"
+            sysctl "net.inet.carp.preempt=${desired_preempt}" >/dev/null 2>&1 || \
+                logger -p warning -t ${TAG} "Failed to set CARP preempt"
+        fi
+    fi
+
+    # Keep pfsync CARP demotion factor at a safe non-zero value.
+    # Setting this to 0 can leave net.inet.carp.demotion stuck at +240 after pfsync bulk sync.
+    local desired_factor=${PFSYNC_CARP_DEMOTION_FACTOR:-240}
     local current_factor=$(sysctl -n net.pfsync.carp_demotion_factor 2>/dev/null || echo "240")
-    if [ "${current_factor}" != "0" ]; then
-        logger -p info -t ${TAG} "Setting PFSYNC CARP demotion factor to 0 (was ${current_factor})"
-        sysctl net.pfsync.carp_demotion_factor=0 >/dev/null 2>&1 || \
+
+    if [ "${current_factor}" != "${desired_factor}" ]; then
+        logger -p info -t ${TAG} "Setting PFSYNC CARP demotion factor to ${desired_factor} (was ${current_factor})"
+        sysctl "net.pfsync.carp_demotion_factor=${desired_factor}" >/dev/null 2>&1 || \
             logger -p warning -t ${TAG} "Failed to set PFSYNC demotion factor"
+    fi
+
+    # Recovery path for stale demotion after reboot races.
+    # Only clear when this node is MASTER and pfsync reports healthy sync state.
+    if [ "${ENABLE_CARP_DEMOTION_RECOVERY}" = "yes" ] && [ "${CARP_STATUS}" = "MASTER" ]; then
+        local current_demotion=$(sysctl -n net.inet.carp.demotion 2>/dev/null || echo "0")
+        if [ "${current_demotion}" -gt 0 ]; then
+            if ifconfig pfsync0 2>/dev/null | grep -q "syncok: 1" && \
+               ifconfig pfsync0 2>/dev/null | grep -q "defer: off"; then
+                logger -p warning -t ${TAG} "Clearing stale CARP demotion (${current_demotion}) on MASTER"
+                sysctl "net.inet.carp.demotion=-${current_demotion}" >/dev/null 2>&1 || \
+                    logger -p warning -t ${TAG} "Failed to clear stale CARP demotion"
+            else
+                logger -p info -t ${TAG} "CARP demotion ${current_demotion} retained (pfsync not yet healthy)"
+            fi
+        fi
     fi
 }
 
@@ -479,6 +515,16 @@ dad_collision_logged() {
         /var/log/system/latest.log >/dev/null 2>&1
 }
 
+clear_ipv6_ifdisabled() {
+    local interface=$1
+
+    if ifconfig "${interface}" 2>/dev/null | grep -q "IFDISABLED"; then
+        logger -p warning -t ${TAG} "Clearing nd6 IFDISABLED on ${interface}"
+        ifconfig "${interface}" inet6 -ifdisabled >/dev/null 2>&1 || \
+            logger -p warning -t ${TAG} "Failed to clear nd6 IFDISABLED on ${interface}"
+    fi
+}
+
 recover_ipv6_on_master_interface() {
     local interface=$1
     local opnsense_interface=$(get_opnsense_interface_name "${interface}")
@@ -497,6 +543,8 @@ recover_ipv6_on_master_interface() {
         else
             logger -p warning -t ${TAG} "No delegated/global IPv6 state on ${interface}; running recovery (attempt ${attempt}/${max_retries})"
         fi
+
+        clear_ipv6_ifdisabled "${interface}"
 
         ifconfig "${interface}" down >/dev/null 2>&1 || true
         sleep 1
@@ -741,6 +789,8 @@ manage_wan_interfaces() {
         
         case "${CARP_STATUS}" in
             "MASTER")
+                clear_ipv6_ifdisabled "${WAN_INT}"
+
                 if [ "${cur_status}" = "DOWN" ]; then
                     logger -p info -t ${TAG} "Bringing up ${WAN_INT} (CARP MASTER)"
                     # Use configctl with correct syntax (spaces not dots)

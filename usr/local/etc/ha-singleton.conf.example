@@ -52,3 +52,7 @@ SYNC_IPV6_STATE="yes"               # Sync IPv6 state between nodes
 INTERFACE_SETTLE_TIME="2"           # Seconds to wait after interface changes
 SERVICE_STARTUP_DELAY="1"           # Seconds between service starts
 HEALTH_CHECK_ENABLED="yes"          # Enable health checking
+CARP_PREEMPT_VALUE="1"              # Enable preemptive CARP failback (1=yes, 0=no)
+ENABLE_CARP_PREEMPT_ENFORCE="yes"   # Enforce net.inet.carp.preempt at CARP events
+PFSYNC_CARP_DEMOTION_FACTOR="240"   # Keep non-zero; 240 is OPNsense default
+ENABLE_CARP_DEMOTION_RECOVERY="yes" # Clear stale demotion on MASTER when pfsync is healthy
