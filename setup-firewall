@@ -817,7 +817,10 @@ install_files_from_directory() {
         mkdir -p /usr/local/etc/rc.d
         cp "${source_dir}/usr/local/etc/rc.d/ha-init-wan" /usr/local/etc/rc.d/
         chmod 755 /usr/local/etc/rc.d/ha-init-wan
-        log_success "Installed WAN initialization rc.d service"
+        # Enable the service in rc.conf.d so FreeBSD rc subsystem actually runs it
+        mkdir -p /etc/rc.conf.d
+        echo 'ha_init_wan_enable="YES"' > /etc/rc.conf.d/ha_init_wan
+        log_success "Installed WAN initialization rc.d service (enabled)"
     fi
 }
 
