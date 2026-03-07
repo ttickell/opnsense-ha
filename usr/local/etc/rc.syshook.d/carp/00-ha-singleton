@@ -72,9 +72,6 @@ ENABLE_IPV6_DAD_RECOVERY="yes"          # Detect missing IPv6/PD on MASTER and a
 IPV6_RECOVERY_RETRY_COUNT="3"           # Recovery attempts per WAN interface
 IPV6_RECOVERY_RETRY_DELAY="4"           # Seconds to wait after each recovery attempt
 
-# IPv6 RA packet guard (prevents BACKUP/INIT node from advertising default route)
-ENABLE_IPV6_RA_PACKET_GUARD="yes"
-IPV6_RA_PACKET_GUARD_ANCHOR="ha/ipv6_ra_guard"
 ENABLE_RADVD_BACKUP_WATCHDOG="yes"      # Keep radvd stopped while BACKUP/INIT
 RADVD_BACKUP_WATCHDOG_INTERVAL="2"      # Seconds between radvd kill checks
 RADVD_BACKUP_WATCHDOG_PIDFILE="/var/run/ha-radvd-backup-watchdog.pid"
@@ -355,52 +352,6 @@ refresh_dhcp6_delegations() {
 }
 
 # Enhanced router advertisement management
-apply_ipv6_ra_packet_guard() {
-    if [ "${ENABLE_IPV6}" != "yes" ] || [ "${ENABLE_IPV6_RA_PACKET_GUARD}" != "yes" ]; then
-        return 0
-    fi
-
-    if ! command -v pfctl >/dev/null 2>&1; then
-        return 0
-    fi
-
-    logger -p info -t ${TAG} "Applying IPv6 RA packet guard on ${INTERFACE} (CARP ${CARP_STATUS})"
-
-    # Block outbound Router Advertisements from this CARP interface while non-MASTER.
-    # This protects clients from learning a stale default route if radvd restarts on BACKUP/INIT.
-    printf '%s\n' "block out quick on ${INTERFACE} inet6 proto icmp6 icmp6-type routeradv label \"ha-ipv6-ra-guard\"" | \
-        pfctl -a "${IPV6_RA_PACKET_GUARD_ANCHOR}" -f - >/dev/null 2>&1 || \
-        logger -p warning -t ${TAG} "Failed to apply IPv6 RA packet guard"
-}
-
-remove_ipv6_ra_packet_guard() {
-    if [ "${ENABLE_IPV6}" != "yes" ] || [ "${ENABLE_IPV6_RA_PACKET_GUARD}" != "yes" ]; then
-        return 0
-    fi
-
-    if ! command -v pfctl >/dev/null 2>&1; then
-        return 0
-    fi
-
-    logger -p info -t ${TAG} "Removing IPv6 RA packet guard on ${INTERFACE} (CARP ${CARP_STATUS})"
-    pfctl -a "${IPV6_RA_PACKET_GUARD_ANCHOR}" -F rules >/dev/null 2>&1 || true
-}
-
-manage_ipv6_ra_packet_guard() {
-    if [ "${ENABLE_IPV6}" != "yes" ] || [ "${ENABLE_IPV6_RA_PACKET_GUARD}" != "yes" ]; then
-        return 0
-    fi
-
-    case "${CARP_STATUS}" in
-        "MASTER")
-            remove_ipv6_ra_packet_guard
-            ;;
-        "BACKUP")
-            apply_ipv6_ra_packet_guard
-            ;;
-    esac
-}
-
 start_radvd_backup_watchdog() {
     if [ "${ENABLE_IPV6}" != "yes" ] || [ "${ENABLE_RADVD_BACKUP_WATCHDOG}" != "yes" ]; then
         return 0
@@ -1535,8 +1486,6 @@ main() {
     fi
     
     # Execute management functions in correct order
-    # Ensure RA packet guard policy is in place before any service management.
-    manage_ipv6_ra_packet_guard
 
     manage_wan_interfaces
     
