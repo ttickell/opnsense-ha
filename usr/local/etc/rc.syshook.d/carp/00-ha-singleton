@@ -67,6 +67,11 @@ ROUTE_RETRY_DELAY="2"                   # Seconds between route retry attempts
 # Interface timing configuration
 INTERFACE_SETTLE_TIME="2"               # Seconds to wait for interface changes to settle
 
+# IPv6 recovery configuration (simultaneous reboot / transient dual-active mitigation)
+ENABLE_IPV6_DAD_RECOVERY="yes"          # Detect missing IPv6/PD on MASTER and auto-recover
+IPV6_RECOVERY_RETRY_COUNT="3"           # Recovery attempts per WAN interface
+IPV6_RECOVERY_RETRY_DELAY="4"           # Seconds to wait after each recovery attempt
+
 DEBUG="no"
 
 # Load configuration file if it exists
@@ -455,6 +460,84 @@ verify_ipv6_connectivity() {
     else
         logger -p warning -t ${TAG} "No IPv6 default route found"
     fi
+}
+
+# IPv6 recovery helpers for transient DAD collisions on simultaneous reboot
+has_non_linklocal_ipv6() {
+    local interface=$1
+    ifconfig "${interface}" 2>/dev/null | awk '/inet6 / { if ($2 !~ /^fe80:/) found=1 } END { exit found ? 0 : 1 }'
+}
+
+has_prefix_delegation_file() {
+    local interface=$1
+    [ -s "/tmp/${interface}_prefixv6" ]
+}
+
+dad_collision_logged() {
+    local interface=$1
+    grep -E "${interface}: .*DAD detected duplicate IPv6 address|${interface}: .*possible hardware address duplication detected" \
+        /var/log/system/latest.log >/dev/null 2>&1
+}
+
+recover_ipv6_on_master_interface() {
+    local interface=$1
+    local opnsense_interface=$(get_opnsense_interface_name "${interface}")
+    local attempt=1
+    local max_retries=${IPV6_RECOVERY_RETRY_COUNT:-3}
+    local retry_delay=${IPV6_RECOVERY_RETRY_DELAY:-4}
+
+    while [ ${attempt} -le ${max_retries} ]; do
+        if has_non_linklocal_ipv6 "${interface}" || has_prefix_delegation_file "${interface}"; then
+            logger -p info -t ${TAG} "IPv6 recovery check passed for ${interface} (attempt ${attempt})"
+            return 0
+        fi
+
+        if dad_collision_logged "${interface}"; then
+            logger -p warning -t ${TAG} "Detected recent DAD collision on ${interface}; running recovery (attempt ${attempt}/${max_retries})"
+        else
+            logger -p warning -t ${TAG} "No delegated/global IPv6 state on ${interface}; running recovery (attempt ${attempt}/${max_retries})"
+        fi
+
+        ifconfig "${interface}" down >/dev/null 2>&1 || true
+        sleep 1
+        ifconfig "${interface}" up >/dev/null 2>&1 || true
+        sleep 1
+
+        configctl interface newipv6 "${opnsense_interface}" >/dev/null 2>&1 || \
+            logger -p warning -t ${TAG} "newipv6 trigger failed for ${interface}"
+
+        /usr/local/etc/rc.configure_interface "${opnsense_interface}" >/dev/null 2>&1 || \
+            logger -p warning -t ${TAG} "interface reconfigure failed during IPv6 recovery for ${interface}"
+
+        sleep ${retry_delay}
+        attempt=$((attempt + 1))
+    done
+
+    if has_non_linklocal_ipv6 "${interface}" || has_prefix_delegation_file "${interface}"; then
+        logger -p info -t ${TAG} "IPv6 recovery eventually succeeded for ${interface}"
+        return 0
+    fi
+
+    logger -p error -t ${TAG} "IPv6 recovery failed for ${interface} after ${max_retries} attempts"
+    return 1
+}
+
+recover_ipv6_after_master_transition() {
+    if [ "${ENABLE_IPV6}" != "yes" ] || [ "${ENABLE_IPV6_DAD_RECOVERY}" != "yes" ]; then
+        return 0
+    fi
+
+    if [ "${CARP_STATUS}" != "MASTER" ]; then
+        return 0
+    fi
+
+    logger -p info -t ${TAG} "Running MASTER IPv6 recovery checks"
+
+    for WAN_INT in ${WAN_INTS}; do
+        if [ "$(get_interface_status "${WAN_INT}")" = "UP" ]; then
+            recover_ipv6_on_master_interface "${WAN_INT}" || true
+        fi
+    done
 }
 
 # Advanced IPv6 connectivity monitoring (Phase 3 Step 5)
@@ -1265,6 +1348,10 @@ main() {
     fi
     
     manage_services
+
+    # Recover IPv6 on MASTER if transient DAD collisions left an interface without PD/global IPv6
+    recover_ipv6_after_master_transition
+
     manage_routes
     
     # Process IPv6 HA management (NEW in v2.8)
