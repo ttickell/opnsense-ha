@@ -7,7 +7,7 @@ Creates:
   CTID 111  lab-isp-att      Alpine LXC  VLAN 211  10.220.11.1/30
 
 Idempotent: skips containers that already exist.
-After creation, installs dnsmasq and deploys the simulator configs.
+After creation, installs ISC Kea DHCP (kea-dhcp4 + kea-dhcp6) and deploys simulator configs.
 
 Usage:
     python3 lab/scripts/01_create_isp_sims.py
@@ -28,7 +28,8 @@ SIMS = [
         "vlan":     lib.VLAN_WAN_A,
         "ipv4":     lib.IPV4_ISP_XFINITY,
         "ipv6":     lib.IPV6_ISP_XFINITY,
-        "conf":     REPO_ROOT / "lab/isp-simulators/xfinity/dnsmasq.conf",
+        "conf4":    REPO_ROOT / "lab/isp-simulators/xfinity/kea-dhcp4.conf",
+        "conf6":    REPO_ROOT / "lab/isp-simulators/xfinity/kea-dhcp6.conf",
         "isp_key":  "xfinity",
     },
     {
@@ -37,7 +38,8 @@ SIMS = [
         "vlan":     lib.VLAN_WAN_B,
         "ipv4":     lib.IPV4_ISP_ATT,
         "ipv6":     lib.IPV6_ISP_ATT,
-        "conf":     REPO_ROOT / "lab/isp-simulators/att/dnsmasq.conf",
+        "conf4":    REPO_ROOT / "lab/isp-simulators/att/kea-dhcp4.conf",
+        "conf6":    REPO_ROOT / "lab/isp-simulators/att/kea-dhcp6.conf",
         "isp_key":  "att",
     },
 ]
@@ -77,7 +79,7 @@ def create_sim(sim: dict) -> bool:
         "swap":         0,
         "net0":         net0,
         "onboot":       0,
-        "unprivileged": 0,   # privileged — dnsmasq needs to bind ports 67/547
+        "unprivileged": 0,   # privileged — DHCP servers bind ports 67/547
         "description":  f"Lab ISP simulator ({sim['isp_key']}). Managed by lab/scripts.",
     }
 
@@ -110,33 +112,49 @@ def setup_sim(sim: dict) -> bool:
             return False
         time.sleep(3)
 
-    # Check if dnsmasq is already installed
-    rc, _ = lib.pct_exec(vmid, "which dnsmasq")
-    dnsmasq_installed = (rc == 0)
+    # Check if Kea DHCP is already installed
+    rc, _ = lib.pct_exec(vmid, "which kea-dhcp4")
+    kea_installed = (rc == 0)
 
-    if not dnsmasq_installed:
+    if not kea_installed:
+        cfg = lib.api_get(f"/api2/json/nodes/{lib.NODE}/lxc/{vmid}/config")
+        has_net1 = bool(cfg.get("net1"))
+
         # Add a temporary management NIC so apk can reach the internet
-        print(f"  Adding temporary management NIC for package install...")
-        try:
-            lib.api_post(f"/api2/json/nodes/{lib.NODE}/lxc/{vmid}/status/stop")
-            time.sleep(4)
-            lib.api_put(f"/api2/json/nodes/{lib.NODE}/lxc/{vmid}/config", {
-                "net1": "name=eth1,bridge=vmbr0,firewall=0,ip=dhcp",
-            })
-            lib.start_vm(vmid, "lxc")
-            time.sleep(6)  # wait for DHCP on mgmt NIC
-        except Exception as e:
-            lib.print_err(f"Could not add mgmt NIC: {e}")
-            return False
+        if not has_net1:
+            print(f"  Adding temporary management NIC for package install...")
+            try:
+                lib.api_post(f"/api2/json/nodes/{lib.NODE}/lxc/{vmid}/status/stop")
+                time.sleep(4)
+                lib.api_put(f"/api2/json/nodes/{lib.NODE}/lxc/{vmid}/config", {
+                    "net1": "name=eth1,bridge=vmbr0,firewall=0,ip=dhcp",
+                })
+                lib.start_vm(vmid, "lxc")
+                time.sleep(6)  # wait for DHCP on mgmt NIC
+            except Exception as e:
+                lib.print_err(f"Could not add mgmt NIC: {e}")
+                return False
+        else:
+            print("  Reusing existing temporary management NIC (net1)...")
 
-        print(f"  Installing dnsmasq in {name}...")
+        print(f"  Installing ISC Kea in {name}...")
         rc, log = lib.pct_exec(vmid,
             "echo 'nameserver 8.8.8.8' >> /etc/resolv.conf && "
-            "apk update -q && apk add -q dnsmasq")
+            "apk update -q && apk add -q kea-dhcp4 kea-dhcp6")
         if rc != 0:
+            try:
+                lib.api_post(f"/api2/json/nodes/{lib.NODE}/lxc/{vmid}/status/stop")
+                time.sleep(4)
+                lib.api_put(f"/api2/json/nodes/{lib.NODE}/lxc/{vmid}/config", {
+                    "delete": "net1",
+                })
+                lib.start_vm(vmid, "lxc")
+                time.sleep(3)
+            except Exception:
+                pass
             lib.print_err(f"apk install failed (exit {rc}): {log[-400:]}")
             return False
-        lib.print_ok("dnsmasq installed")
+        lib.print_ok("ISC Kea installed")
 
         # Remove temporary management NIC
         print(f"  Removing temporary management NIC...")
@@ -153,7 +171,7 @@ def setup_sim(sim: dict) -> bool:
             lib.print_err(f"Could not remove mgmt NIC: {e}")
             return False
     else:
-        lib.print_ok("dnsmasq already installed")
+        lib.print_ok("ISC Kea already installed")
 
     # Enable IP forwarding (idempotent — duplicate entries are harmless)
     rc, _ = lib.pct_exec(vmid,
@@ -163,33 +181,47 @@ def setup_sim(sim: dict) -> bool:
         "sysctl -p /etc/sysctl.conf 2>/dev/null; true")
     lib.print_ok("IP forwarding enabled")
 
-    # Deploy dnsmasq config
-    conf_path = sim["conf"]
-    if not conf_path.exists():
-        lib.print_err(f"Config not found: {conf_path}")
+    # Deploy ISC Kea configs
+    conf4_path = sim["conf4"]
+    conf6_path = sim["conf6"]
+    if not conf4_path.exists() or not conf6_path.exists():
+        lib.print_err(f"Config not found: {conf4_path} and/or {conf6_path}")
         return False
 
-    conf_content = conf_path.read_text()
-    print(f"  Deploying dnsmasq config ({len(conf_content)} bytes)...")
-    if not lib.pct_push(vmid, conf_content, "/etc/dnsmasq.conf"):
-        return False
-    lib.print_ok("dnsmasq config deployed")
-
-    # Enable and (re)start dnsmasq
-    rc, log = lib.pct_exec(vmid,
-        "rc-update add dnsmasq default 2>/dev/null; rc-service dnsmasq restart")
+    rc, _ = lib.pct_exec(vmid, "mkdir -p /etc/kea")
     if rc != 0:
-        lib.print_err(f"dnsmasq service failed (exit {rc}): {log[-400:]}")
+        lib.print_err("Could not create /etc/kea in simulator container")
         return False
-    lib.print_ok("dnsmasq started")
+
+    conf4_content = conf4_path.read_text()
+    conf6_content = conf6_path.read_text()
+    print(f"  Deploying kea-dhcp4.conf ({len(conf4_content)} bytes)...")
+    if not lib.pct_push(vmid, conf4_content, "/etc/kea/kea-dhcp4.conf"):
+        return False
+    print(f"  Deploying kea-dhcp6.conf ({len(conf6_content)} bytes)...")
+    if not lib.pct_push(vmid, conf6_content, "/etc/kea/kea-dhcp6.conf"):
+        return False
+    lib.print_ok("ISC Kea configs deployed")
+
+    # Enable and restart Kea services
+    rc, log = lib.pct_exec(vmid,
+        "rc-service dnsmasq stop 2>/dev/null || true; "
+        "rc-update del dnsmasq default 2>/dev/null || true; "
+        "rc-update add kea-dhcp4 default 2>/dev/null; "
+        "rc-update add kea-dhcp6 default 2>/dev/null; "
+        "rc-service kea-dhcp4 restart; rc-service kea-dhcp6 restart")
+    if rc != 0:
+        lib.print_err(f"ISC Kea service failed (exit {rc}): {log[-400:]}")
+        return False
+    lib.print_ok("ISC Kea started")
 
     # Verify
     rc, log = lib.pct_exec(vmid,
-        "ps | grep dnsmasq | grep -v grep && echo running || echo not-running")
+        "ps | grep -E 'kea-dhcp4|kea-dhcp6' | grep -v grep && echo running || echo not-running")
     if "running" in log and "not-running" not in log:
-        lib.print_ok("dnsmasq running")
+        lib.print_ok("ISC Kea running")
     else:
-        print(f"  ⚠  Could not confirm dnsmasq — check container {vmid} manually")
+        print(f"  ⚠  Could not confirm ISC Kea — check container {vmid} manually")
 
     return True
 

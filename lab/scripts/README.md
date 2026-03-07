@@ -42,8 +42,8 @@ python3 lab/scripts/destroy.py   # tears down 110-114 (prompts for YES)
 | VMID/CTID | Type | Name | Role |
 |---|---|---|---|
 | 100 | VM | `router-b` | **PROTECTED** — reference impl, never modify |
-| 110 | LXC | `lab-isp-xfinity` | Xfinity ISP simulator (dnsmasq, VLAN 210) |
-| 111 | LXC | `lab-isp-att` | AT&T ISP simulator (dnsmasq, VLAN 211) |
+| 110 | LXC | `lab-isp-xfinity` | Xfinity ISP simulator (ISC Kea DHCP, VLAN 210) |
+| 111 | LXC | `lab-isp-att` | AT&T ISP simulator (ISC Kea DHCP, VLAN 211) |
 | 112 | VM | `lab-fw-primary` | OPNsense primary firewall |
 | 113 | VM | `lab-fw-secondary` | OPNsense secondary firewall |
 | 114 | LXC | `lab-client` | Test client (DHCP, VLAN 212) |

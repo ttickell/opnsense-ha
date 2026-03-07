@@ -17,6 +17,9 @@ stop_cmd=":"
 
 ha_init_wan_start() {
     local log_tag="ha-init-wan"
+    local settle_wait="15"
+    local elapsed="0"
+    local effective_state=""
     
     # Check if ha-singleton.conf exists
     if [ ! -f "/usr/local/etc/ha-singleton.conf" ]; then
@@ -31,30 +34,61 @@ ha_init_wan_start() {
         return 0
     fi
     
-    # Detect CARP state
-    local carp_state=$(ifconfig | grep -i "carp:" | grep -o "MASTER\|BACKUP\|INIT" | head -1)
-    
-    if [ -z "$carp_state" ]; then
+    # Detect CARP state with short settle window (boot may report INIT briefly)
+    while [ "${elapsed}" -lt "${settle_wait}" ]; do
+        local carp_states
+        carp_states=$(ifconfig | awk '/carp:/ { if ($0 ~ /MASTER/) print "MASTER"; else if ($0 ~ /BACKUP/) print "BACKUP"; else if ($0 ~ /INIT/) print "INIT" }')
+
+        if [ -n "${carp_states}" ]; then
+            if echo "${carp_states}" | grep -q '^MASTER$'; then
+                effective_state="MASTER"
+                break
+            fi
+
+            if echo "${carp_states}" | grep -q '^BACKUP$'; then
+                effective_state="BACKUP"
+                break
+            fi
+
+            # Safe default during startup: treat INIT as BACKUP
+            if echo "${carp_states}" | grep -q '^INIT$'; then
+                effective_state="BACKUP"
+                break
+            fi
+        fi
+
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    if [ -z "${effective_state}" ]; then
         logger -t "$log_tag" "No CARP interface found, skipping WAN state initialization"
         return 0
     fi
-    
-    logger -t "$log_tag" "Detected CARP state: $carp_state"
-    
-    # If BACKUP, bring WAN interfaces down
-    if [ "$carp_state" = "BACKUP" ]; then
-        logger -t "$log_tag" "BACKUP state - bringing WAN interfaces DOWN"
-        
-        for iface in $WAN_INTS; do
-            if ifconfig "$iface" | grep -q "UP"; then
-                logger -t "$log_tag" "Bringing down: $iface"
-                ifconfig "$iface" down
-            fi
-        done
-        
-        logger -t "$log_tag" "WAN initialization complete (DOWN for BACKUP role)"
+
+    logger -t "$log_tag" "Detected CARP state: ${effective_state}"
+
+    # Prefer running the main HA hook to ensure interfaces/services/routes are all reconciled.
+    if [ -x "/usr/local/etc/rc.syshook.d/carp/00-ha-singleton" ]; then
+        logger -t "$log_tag" "Running 00-ha-singleton boot reconciliation (${effective_state})"
+        /usr/local/etc/rc.syshook.d/carp/00-ha-singleton "boot" "${effective_state}" >/dev/null 2>&1 || \
+            logger -t "$log_tag" "WARN: boot reconciliation via 00-ha-singleton failed"
     else
-        logger -t "$log_tag" "MASTER/INIT state - WAN interfaces left UP"
+        # Fallback behavior if hook is unavailable.
+        if [ "${effective_state}" = "BACKUP" ]; then
+            logger -t "$log_tag" "BACKUP state - bringing WAN interfaces DOWN (fallback mode)"
+
+            for iface in $WAN_INTS; do
+                if ifconfig "$iface" | grep -q "UP"; then
+                    logger -t "$log_tag" "Bringing down: $iface"
+                    ifconfig "$iface" down
+                fi
+            done
+
+            logger -t "$log_tag" "WAN initialization complete (DOWN for BACKUP role)"
+        else
+            logger -t "$log_tag" "MASTER state - WAN interfaces left UP (fallback mode)"
+        fi
     fi
 }
 

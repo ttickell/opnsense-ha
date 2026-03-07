@@ -93,11 +93,24 @@ All addresses are carved from the `fd03:17ac:e938:4000::/50` test delegation blo
 Key real-world behaviors being simulated:
 
 - **Single IPv4 address** via DHCP (no public block; one address like a residential modem).
-- **Two /60 prefix delegations** handed in a single DHCPv6 exchange. The real Xfinity provides prefixes from the `2601:346::/32` range; the lab uses the equivalent ULA test blocks.
+- **Multiple /60 prefix delegations** from a larger Xfinity-like pool. The real Xfinity provides prefixes from the `2601:346::/32` range; the lab uses the equivalent ULA test blocks and can allocate many /60s over time.
 - **DUID-sensitive**: Xfinity binds delegations tightly to the DUID. The lab simulator enforces this by binding pool entries — if the test firewall's DUID changes, it gets new prefixes. This is the correct behavior to test against.
 - **First IA-PD wins the DUID**: In `dhcp6c.conf`, Xfinity must be listed as the first `interface` block so the DUID used for its exchange is the primary DUID.
 
-The `lab-isp-xfinity` LXC runs `dnsmasq` configured to issue both /60 delegations in response to a single IA-PD SOLICIT. See [isp-simulators/xfinity/dnsmasq.conf](isp-simulators/xfinity/dnsmasq.conf).
+The `lab-isp-xfinity` LXC runs ISC Kea DHCP (`kea-dhcp4` + `kea-dhcp6`) configured to delegate /60s from an expanded pool (`fd03:17ac:e938:4040::/58` and `fd03:17ac:e938:4080::/58`, delegated length /60). See [isp-simulators/xfinity/kea-dhcp6.conf](isp-simulators/xfinity/kea-dhcp6.conf).
+
+### Xfinity DUID Validation (anti false-positive)
+
+Use this sequence to verify DUID behavior correctly (not just "got two prefixes"):
+
+1. **Baseline**: on primary firewall, request/renew DHCPv6 and record delegated /60 prefixes.
+2. **Capture lease owner**: on `lab-isp-xfinity`, inspect Kea lease data/logs and record the client DUID associated with those prefixes.
+3. **Force mismatch**: on secondary, replace `/var/db/dhcp6c_duid` with a different value and trigger DHCPv6 renew.
+4. **Expected mismatch result**: secondary must not be treated as the same client identity; do not accept a pass based only on prefix count.
+5. **Restore shared DUID**: copy primary DUID back to secondary and renew again.
+6. **Expected restored result**: lease ownership/prefix behavior matches the shared DUID model.
+
+Pass criteria: behavior is validated by **DUID-to-lease ownership**, not by number of delegated prefixes alone.
 
 ### AT&T Simulation
 
@@ -107,7 +120,7 @@ Key real-world behaviors being simulated:
 - **Drip-fed /64 delegations** — AT&T's CPE hands out /64 prefixes from an internal /60, one per IA-PD request. The lab `lab-isp-att` LXC simulates this by managing a pool of 8 × /64 prefixes (`fd03:17ac:e938:4140::/64` through `fd03:17ac:e938:4147::/64`). Each SOLICIT receives one /64 from the pool; subsequent requests get the next available prefix (within the same session, the same prefix is renewed).
 - **DUID less sensitive** than Xfinity in practice — the lab does not enforce strict DUID binding on AT&T.
 
-See [isp-simulators/att/dnsmasq.conf](isp-simulators/att/dnsmasq.conf).
+See [isp-simulators/att/kea-dhcp6.conf](isp-simulators/att/kea-dhcp6.conf).
 
 ---
 
@@ -189,10 +202,11 @@ A sequenced checklist for building the isolated lab. Tasks are grouped by depend
   - NIC: `vmbr-lab`, VLAN tag 211, untagged inside container
   - Static IP: `10.220.11.1/30`, `fd03:17ac:e938:4100::1/64`
   - No firewall
-- [ ] **2.3** On `lab-isp-xfinity`: run `lab/isp-simulators/setup.sh` and copy `lab/isp-simulators/xfinity/dnsmasq.conf` to `/etc/dnsmasq.conf`
-- [ ] **2.4** On `lab-isp-att`: run `lab/isp-simulators/setup.sh` and copy `lab/isp-simulators/att/dnsmasq.conf` to `/etc/dnsmasq.conf`
-- [ ] **2.5** Verify dnsmasq is listening on each simulator: `netstat -ulnp | grep 67`
-  - If DHCPv6-PD via dnsmasq fails (version incompatibility), fall back to the `dhcpd6` config blocks in the comments of each `dnsmasq.conf`
+- [ ] **2.3** On `lab-isp-xfinity`: run `lab/isp-simulators/setup.sh xfinity` to install ISC Kea and deploy `kea-dhcp4.conf`/`kea-dhcp6.conf`
+- [ ] **2.4** On `lab-isp-att`: run `lab/isp-simulators/setup.sh att` to install ISC Kea and deploy `kea-dhcp4.conf`/`kea-dhcp6.conf`
+- [ ] **2.5** Verify ISC Kea is listening on each simulator:
+  - IPv4: `netstat -ulnp | grep ':67 '`
+  - IPv6: `netstat -ulnp | grep ':547 '`
 
 ### Group 3 — Firewall VMs
 
@@ -283,15 +297,19 @@ For each ISP simulator, create an Alpine Linux LXC:
 - Network: `vmbr-lab`, VLAN tag = 210 (Xfinity) or 211 (AT&T); untagged access
 - No firewall on the LXC (it acts as the upstream device)
 
-Install dnsmasq inside each LXC:
+Install ISC Kea DHCP inside each LXC:
 ```bash
-apk add dnsmasq
+apk add kea-dhcp4 kea-dhcp6
 ```
 
-Copy the corresponding config from [isp-simulators/](isp-simulators/) and enable the service:
+Copy the corresponding configs from [isp-simulators/](isp-simulators/) and start the service pair:
 ```bash
-rc-update add dnsmasq
-rc-service dnsmasq start
+cp isp-simulators/<isp>/kea-dhcp4.conf /etc/kea/kea-dhcp4.conf
+cp isp-simulators/<isp>/kea-dhcp6.conf /etc/kea/kea-dhcp6.conf
+rc-update add kea-dhcp4
+rc-update add kea-dhcp6
+rc-service kea-dhcp4 restart
+rc-service kea-dhcp6 restart
 ```
 
 ### 3. Create OPNsense firewall VMs

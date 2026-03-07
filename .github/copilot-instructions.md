@@ -11,6 +11,7 @@ This file describes the project layout, conventions, and key design decisions so
 - **Path clarity in VS Code chat.** When answering path questions, state whether the path is absolute or workspace-relative, and provide the full absolute path in plain text (for example: `/usr/local/etc/checkset-nptv6.yml`) to avoid UI path-chip collapsing ambiguity.
 - **Debug command-first for system issues.** When debugging system-level commands, first isolate and validate the exact command behavior (with minimal repro steps) before editing project files. Do not iterate through edit/commit/push cycles until command-level root cause is confirmed.
 - **Always run the tool after fixing tool bugs.** When developing or modifying an operational tool/script, validate the fix by executing that same tool/script and confirming behavior. Never patch a tool bug "on the side" and assume the fix worked without running it.
+- **Check docs before assuming.** Before concluding a tool or dependency cannot do something, verify the relevant official documentation (or in-repo reference docs) and only then choose a workaround.
 
 ---
 

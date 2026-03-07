@@ -18,35 +18,44 @@ fi
 
 echo "==> Setting up lab-isp-${ISP} on Alpine Linux"
 
-# Update and install dnsmasq
+# Update and install ISC Kea DHCP servers
 apk update
-apk add dnsmasq
+apk add kea-dhcp4 kea-dhcp6
 
 # Enable IP forwarding (ISP simulators act as routers)
 echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
 sysctl -p /etc/sysctl.conf 2>/dev/null || true
 
-# Copy dnsmasq config from the repo (assumes this script runs from lab/)
-CONFIG_SRC="isp-simulators/${ISP}/dnsmasq.conf"
-if [ ! -f "${CONFIG_SRC}" ]; then
-    echo "ERROR: Config file not found: ${CONFIG_SRC}"
+# Copy Kea configs from the repo (assumes this script runs from lab/)
+CONFIG4_SRC="isp-simulators/${ISP}/kea-dhcp4.conf"
+CONFIG6_SRC="isp-simulators/${ISP}/kea-dhcp6.conf"
+if [ ! -f "${CONFIG4_SRC}" ] || [ ! -f "${CONFIG6_SRC}" ]; then
+    echo "ERROR: Config files not found: ${CONFIG4_SRC} and/or ${CONFIG6_SRC}"
     echo "Run this script from the lab/ directory."
     exit 1
 fi
 
-cp "${CONFIG_SRC}" /etc/dnsmasq.conf
-echo "==> Installed dnsmasq config from ${CONFIG_SRC}"
+mkdir -p /etc/kea
+cp "${CONFIG4_SRC}" /etc/kea/kea-dhcp4.conf
+cp "${CONFIG6_SRC}" /etc/kea/kea-dhcp6.conf
+echo "==> Installed Kea configs from ${CONFIG4_SRC} and ${CONFIG6_SRC}"
 
-# Enable and start dnsmasq
-rc-update add dnsmasq default
-rc-service dnsmasq start
+# Disable legacy dnsmasq if present (prevents port 67/547 conflicts)
+rc-service dnsmasq stop 2>/dev/null || true
+rc-update del dnsmasq default 2>/dev/null || true
 
-echo "==> dnsmasq started"
+# Enable and start Kea services
+rc-update add kea-dhcp4 default
+rc-update add kea-dhcp6 default
+rc-service kea-dhcp4 restart
+rc-service kea-dhcp6 restart
+
+echo "==> ISC Kea DHCP started (kea-dhcp4 + kea-dhcp6)"
 echo ""
 echo "Verify DHCP is running:"
-echo "  ps aux | grep dnsmasq"
-echo "  tail -f /var/log/messages | grep dnsmasq"
+echo "  ps aux | grep kea-dhcp"
+echo "  tail -f /var/log/messages | grep kea"
 echo ""
 echo "Watch for DHCP exchanges when the lab firewall WAN boots:"
 echo "  tail -f /var/log/messages | grep -E '(DHCP|dhcp6|prefix)'"

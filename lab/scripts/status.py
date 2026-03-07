@@ -68,7 +68,7 @@ def main():
             if s and s != "running":
                 print(f"    {name}: currently {s}")
 
-    # Show ISP sim DHCP health if running
+    # Show ISP simulator DHCP health if running
     for vmid, (kind, name) in LAB_NAMES.items():
         if kind != "lxc" or "isp" not in name:
             continue
@@ -76,9 +76,9 @@ def main():
             continue
         if lib._ssh_key_exists():
             rc, log = lib.pct_exec(vmid,
-                "rc-service dnsmasq status 2>&1 | head -1")
+                "ps | grep -E 'kea-dhcp4|kea-dhcp6' | grep -v grep >/dev/null && echo running || echo not-running")
             if rc == 0:
-                print(f"  {name} dnsmasq: {log.strip()}")
+                print(f"  {name} isc-kea: {log.strip()}")
 
     print()
 

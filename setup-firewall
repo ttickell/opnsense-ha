@@ -698,6 +698,30 @@ validate_wan_interfaces() {
     return 0
 }
 
+# Function to validate CARP preempt behavior for deterministic failback
+validate_carp_preempt() {
+    log_info "Validating CARP preempt setting..."
+
+    if ! command -v sysctl >/dev/null 2>&1; then
+        log_warning "sysctl not available; unable to validate net.inet.carp.preempt"
+        return 1
+    fi
+
+    local carp_preempt
+    carp_preempt=$(sysctl -n net.inet.carp.preempt 2>/dev/null || echo "")
+
+    if [ "${carp_preempt}" = "1" ]; then
+        log_success "CARP preempt is enabled (net.inet.carp.preempt=1)"
+        return 0
+    fi
+
+    log_error "CARP preempt is not enabled (current: ${carp_preempt:-unknown}, required: 1)"
+    log_error "HA failback requires preempt so primary can reclaim MASTER after recovery"
+    log_info "Set now (runtime): sysctl net.inet.carp.preempt=1"
+    log_info "Persist in OPNsense: System > Settings > Tunables > net.inet.carp.preempt = 1"
+    return 1
+}
+
 # Function to install git if needed
 ensure_git() {
     if ! command -v git >/dev/null 2>&1; then
@@ -995,6 +1019,7 @@ show_post_install_info() {
     echo "4. ${YELLOW}IMPORTANT: Configure DHCPv6 DUID synchronization (see below)${NC}"
     echo "5. Test failover functionality"
     echo "6. Verify system tunables: sysctl net.pfsync.carp_demotion_factor"
+    echo "7. Verify CARP preempt: sysctl net.inet.carp.preempt (must be 1)"
     echo
     log_info "Configuration file: /usr/local/etc/ha-singleton.conf"
     log_info "Main script: /usr/local/etc/rc.syshook.d/carp/00-ha-singleton"
@@ -1087,9 +1112,11 @@ run_test_mode() {
         if command -v sysctl >/dev/null 2>&1; then
             local carp_demotion=$(sysctl -n net.inet.carp.demotion 2>/dev/null || echo 'not set')
             local pfsync_demotion=$(sysctl -n net.pfsync.carp_demotion_factor 2>/dev/null || echo 'not set')
+            local carp_preempt=$(sysctl -n net.inet.carp.preempt 2>/dev/null || echo 'not set')
             
             echo "net.inet.carp.demotion: ${carp_demotion}"
             echo "net.pfsync.carp_demotion_factor: ${pfsync_demotion}"
+            echo "net.inet.carp.preempt: ${carp_preempt}"
             
             # Check for known problematic values
             if [ "${pfsync_demotion}" != "0" ] && [ "${pfsync_demotion}" != "not set" ]; then
@@ -1103,6 +1130,14 @@ run_test_mode() {
                 log_warning "CARP demotion level is elevated: ${carp_demotion}"
             else
                 log_success "CARP demotion level is optimal (${carp_demotion})"
+            fi
+
+            if [ "${carp_preempt}" != "1" ] && [ "${carp_preempt}" != "not set" ]; then
+                log_warning "CARP preempt is ${carp_preempt} (must be 1 for primary failback)"
+            elif [ "${carp_preempt}" = "1" ]; then
+                log_success "CARP preempt is correctly enabled (${carp_preempt})"
+            else
+                log_warning "CARP preempt could not be read"
             fi
         fi
         echo
@@ -1148,6 +1183,10 @@ main() {
     if ! validate_wan_interfaces "${WAN_INTERFACES}"; then
         error_exit "Invalid WAN interfaces provided: ${WAN_INTERFACES}"
     fi
+
+    if ! validate_carp_preempt; then
+        error_exit "CARP preempt validation failed"
+    fi
     
     # Check if running as root
     if [ "$(id -u)" -ne 0 ]; then
@@ -1181,6 +1220,7 @@ main() {
     log_info "Cleanup First: ${CLEANUP_FIRST}"
     log_info "ALT_DEFROUTE_IPV4 override: ${ALT_GW_IPV4}"
     log_info "ALT_DEFROUTE_IPV6 override: ${ALT_GW_IPV6}"
+    log_info "CARP preempt: $(sysctl -n net.inet.carp.preempt 2>/dev/null || echo unknown)"
     echo
     
     # Cleanup existing installation if requested
