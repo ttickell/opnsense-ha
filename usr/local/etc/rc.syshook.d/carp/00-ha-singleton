@@ -96,16 +96,27 @@ fi
 
 # Lock management functions
 acquire_lock() {
-    if [ -f "${LOCKFILE}" ]; then
-        local pid=$(cat "${LOCKFILE}")
-        if ps -p "${pid}" > /dev/null 2>&1; then
-            logger -p warning -t ${TAG} "Script already running (PID: ${pid}), exiting"
-            exit 0
+    local waited=0
+    local max_wait=60   # seconds — long enough for any BACKUP event to finish
+    local interval=2
+
+    while [ -f "${LOCKFILE}" ]; do
+        local pid
+        pid=$(cat "${LOCKFILE}" 2>/dev/null || true)
+        if [ -n "${pid}" ] && ps -p "${pid}" > /dev/null 2>&1; then
+            if [ "${waited}" -ge "${max_wait}" ]; then
+                logger -p error -t ${TAG} "Timed out waiting for lock held by PID ${pid} after ${max_wait}s — exiting"
+                exit 1
+            fi
+            logger -p info -t ${TAG} "Waiting for lock held by PID ${pid} (${waited}s elapsed)"
+            sleep "${interval}"
+            waited=$((waited + interval))
         else
-            logger -p info -t ${TAG} "Removing stale lock file"
+            logger -p info -t ${TAG} "Removing stale lock file (PID ${pid} gone)"
             rm -f "${LOCKFILE}"
+            break
         fi
-    fi
+    done
     echo $$ > "${LOCKFILE}"
 }
 
