@@ -26,8 +26,14 @@ INTERFACE=$1
 CARP_STATUS=$2
 
 # Default configuration (overridden by config file if it exists)
-WAN_INTS="__INT_LIST__"
-WAN_INTERFACE_MAP="wan:vtnet0_vlan110"  # Format: opnsense_name:device_name
+#
+# WAN interface map — auto-populated at startup by build_wan_map() from /conf/config.xml.
+# Format per entry: "opnsense_name:device_name:label" (space-separated).
+# Can be set manually in ha-singleton.conf to override auto-discovery.
+# Example: WAN_MAP="wan:vtnet0:wan opt1:vtnet1:wan2"
+WAN_MAP=""
+# WAN_INTS is derived from WAN_MAP at startup (device names only); do not set manually.
+WAN_INTS=""
 SERVICES="rtsold dhcp6c radvd"
 ALT_DEFROUTE_IPV4="192.168.105.2"
 ALT_DEFROUTE_IPV6="fd03:17ac:e938:10::2"
@@ -188,13 +194,70 @@ init_system_tunables() {
     fi
 }
 
+# Discover WAN interfaces from /conf/config.xml and populate WAN_MAP and WAN_INTS.
+# WAN_MAP format per entry: "opnsense_name:device:label" (space-separated).
+# Detection rules:
+#   <wan>  element                            => always WAN; label="wan"
+#   <optN> element with <descr>WANn</descr>   => additional WAN; label=lowercased descr
+# If WAN_MAP is already set (manual override in ha-singleton.conf), skips awk discovery
+# and only derives WAN_INTS.
+build_wan_map() {
+    if [ -z "${WAN_MAP}" ]; then
+        if [ ! -f /conf/config.xml ]; then
+            logger -p error -t ${TAG} "build_wan_map: /conf/config.xml not found, cannot discover WAN interfaces"
+            exit 1
+        fi
+        WAN_MAP=$(awk '
+            /<interfaces>/ { in_if = 1; next }
+            /<\/interfaces>/ { in_if = 0 }
+            !in_if { next }
+            /^[[:space:]]*<[a-z][a-z0-9]*>[[:space:]]*$/ {
+                tag = $0; sub(/^[[:space:]]*</, "", tag); sub(/>.*$/, "", tag)
+                iface = tag; dev = ""; descr = ""
+            }
+            /<if>[^<]/ {
+                line = $0; sub(/.*<if>/, "", line); sub(/<\/if>.*/, "", line); dev = line
+            }
+            /<descr>[^<]/ {
+                line = $0; sub(/.*<descr>/, "", line); sub(/<\/descr>.*/, "", line); descr = line
+            }
+            /^[[:space:]]*<\/[a-z][a-z0-9]*>[[:space:]]*$/ {
+                tag = $0; sub(/^[[:space:]]*<\//, "", tag); sub(/>.*$/, "", tag)
+                if (tag == iface && dev != "") {
+                    is_wan = 0; label = ""
+                    if (iface == "wan") { is_wan = 1; label = "wan" }
+                    if (iface ~ /^opt[1-9]$/ && descr ~ /^[Ww][Aa][Nn][2-9]$/) {
+                        is_wan = 1; label = tolower(descr)
+                    }
+                    if (is_wan) printf "%s:%s:%s ", iface, dev, label
+                }
+                iface = ""; dev = ""; descr = ""
+            }
+        ' /conf/config.xml)
+        WAN_MAP="${WAN_MAP%% }"  # trim trailing space
+        if [ -z "${WAN_MAP}" ]; then
+            logger -p error -t ${TAG} "build_wan_map: no WAN interfaces found in /conf/config.xml"
+            exit 1
+        fi
+    fi
+
+    # Derive WAN_INTS (device names only) from WAN_MAP for ifconfig loops
+    WAN_INTS=""
+    for _triple in ${WAN_MAP}; do
+        _rest="${_triple#*:}"; _dev="${_rest%%:*}"
+        WAN_INTS="${WAN_INTS}${WAN_INTS:+ }${_dev}"
+    done
+    debug_log "WAN discovery: WAN_MAP=${WAN_MAP} WAN_INTS=${WAN_INTS}"
+}
+
 # Initialize
 acquire_lock
 validate_environment
 init_system_tunables
+build_wan_map
 
 logger -p info -t ${TAG} "Processing CARP event: ${INTERFACE} -> ${CARP_STATUS}"
-debug_log "Configuration: WAN_INTS=${WAN_INTS}, IPv6=${ENABLE_IPV6}, Services=${ENABLE_SERVICE_MANAGEMENT}"
+debug_log "Configuration: WAN_INTS=${WAN_INTS}, WAN_MAP=${WAN_MAP}, IPv6=${ENABLE_IPV6}, Services=${ENABLE_SERVICE_MANAGEMENT}"
 
 # IPv6 HA Management Functions
 ensure_ipv6_state_directory() {
@@ -807,23 +870,33 @@ get_interface_status() {
     fi
 }
 
-# Map device name to OPNsense interface name for configctl commands
+# Map kernel device name to OPNsense interface identifier (e.g. vtnet1 -> opt1).
+# Reads WAN_MAP populated by build_wan_map().
 get_opnsense_interface_name() {
     local device_name=$1
-    
-    # Parse WAN_INTERFACE_MAP format: "opnsense_name:device_name"
-    echo "${WAN_INTERFACE_MAP}" | tr ' ' '\n' | while read mapping; do
-        if [ -n "${mapping}" ]; then
-            local opnsense_name=$(echo "${mapping}" | cut -d':' -f1)
-            local device=$(echo "${mapping}" | cut -d':' -f2)
-            if [ "${device}" = "${device_name}" ]; then
-                echo "${opnsense_name}"
-                return
-            fi
+    for _triple in ${WAN_MAP}; do
+        _rest="${_triple#*:}"; _dev="${_rest%%:*}"
+        if [ "${_dev}" = "${device_name}" ]; then
+            echo "${_triple%%:*}"
+            return
         fi
     done
-    
-    # Default fallback: assume 'wan' if no mapping found
+    logger -p warning -t ${TAG} "get_opnsense_interface_name: no WAN_MAP match for ${device_name}"
+    echo "wan"
+}
+
+# Map kernel device name to human WAN label (e.g. vtnet1 -> wan2).
+# Used for config file paths like dhcp6c_wan2.conf.custom and log messages.
+# Reads WAN_MAP populated by build_wan_map().
+get_wan_label() {
+    local device_name=$1
+    for _triple in ${WAN_MAP}; do
+        _rest="${_triple#*:}"; _dev="${_rest%%:*}"
+        if [ "${_dev}" = "${device_name}" ]; then
+            echo "${_rest##*:}"
+            return
+        fi
+    done
     echo "wan"
 }
 

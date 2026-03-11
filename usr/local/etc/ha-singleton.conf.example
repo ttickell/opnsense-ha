@@ -3,21 +3,14 @@
 # Universal configuration that works for any number of WAN interfaces
 # This file should be copied to /usr/local/etc/ha-singleton.conf and customized
 
-# WAN Interfaces to manage (space-delimited)
-# Examples: 
-#   Single WAN: "vtnet0_vlan110"
-#   Dual WAN:   "vtnet1 vtnet2"  
-#   Multi WAN:  "vtnet1 vtnet2 vtnet3"
-WAN_INTS="vtnet1 vtnet2"
-
-# WAN Interface Mapping (OPNsense interface name to device name)
-# Format: "opnsense_name:device_name opnsense_name2:device_name2"
-# This mapping is used for configctl interface reconfigure/newip commands
-# Examples:
-#   Single WAN: "wan:vtnet0_vlan110"
-#   Dual WAN:   "wan:vtnet1 wan2:vtnet2"
-#   Multi WAN:  "wan:vtnet1 wan2:vtnet2 wan3:vtnet3"
-WAN_INTERFACE_MAP="wan:vtnet1 wan2:vtnet2"
+# WAN interfaces are auto-discovered from /conf/config.xml at startup.
+# No manual configuration needed. The script identifies:
+#   - The <wan> interface element  (always treated as WAN)
+#   - Any <optN> element whose <descr> matches WANn (e.g. WAN2, WAN3)
+#
+# Manual override (only needed for non-standard deployments):
+#   WAN_MAP="wan:vtnet0:wan opt1:vtnet1:wan2"
+#   Format per entry: "opnsense_name:device_name:label"
 
 # Services to manage based on CARP status
 SERVICES="rtsold dhcp6c radvd"
