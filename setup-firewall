@@ -53,22 +53,6 @@ cleanup() {
 }
 
 # Function to read WAN interfaces from existing configuration
-read_existing_config() {
-    local config_file="/usr/local/etc/ha-singleton.conf"
-    
-    if [ -f "${config_file}" ]; then
-        # Try to extract WAN_INTS from the config file
-        local wan_ints=$(grep "^WAN_INTS=" "${config_file}" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'")
-        if [ -n "${wan_ints}" ]; then
-            echo "${wan_ints}"
-            return 0
-        fi
-    fi
-    
-    # Return empty if no config found or WAN_INTS not found
-    return 1
-}
-
 # Trap to ensure cleanup on exit
 trap cleanup EXIT
 
@@ -158,7 +142,6 @@ WAN_INTERFACES=""
 BRANCH_NAME=""
 ALT_GW_IPV4=""
 ALT_GW_IPV6=""
-GENERATED_WAN_INTERFACE_MAP=""
 LOCAL_LAN_INTERFACE=""
 LOCAL_CARP_IPV4=""
 LOCAL_CARP_IPV6=""
@@ -244,16 +227,9 @@ while [ $# -gt 0 ]; do
 done
 
 # Set defaults if not provided
-# First, try to read from existing configuration (smart defaults)
 if [ -z "${WAN_INTERFACES}" ]; then
-    existing_wan_ints=$(read_existing_config)
-    if [ $? -eq 0 ] && [ -n "${existing_wan_ints}" ]; then
-        WAN_INTERFACES="${existing_wan_ints}"
-        log_info "Using WAN interfaces from existing configuration: ${WAN_INTERFACES}"
-    else
-        WAN_INTERFACES="vtnet1"
-        log_info "No existing configuration found, using default: ${WAN_INTERFACES}"
-    fi
+    WAN_INTERFACES="vtnet1"
+    log_info "No WAN interfaces specified, using default: ${WAN_INTERFACES}"
 fi
 BRANCH_NAME="${BRANCH_NAME:-main}"
 
@@ -633,30 +609,6 @@ validate_peer_ssh_carp() {
     log_success "Peer SSH LAN/CARP validation passed"
 }
 
-generate_wan_interface_map() {
-    local idx=1
-    local map=""
-    local if_name=""
-
-    for iface in ${WAN_INTERFACES}; do
-        if [ ${idx} -eq 1 ]; then
-            if_name="wan"
-        else
-            if_name="wan${idx}"
-        fi
-
-        if [ -z "${map}" ]; then
-            map="${if_name}:${iface}"
-        else
-            map="${map} ${if_name}:${iface}"
-        fi
-
-        idx=$((idx + 1))
-    done
-
-    echo "${map}"
-}
-
 escape_sed_replacement() {
     printf '%s' "$1" | sed 's/[\\/&]/\\\\&/g'
 }
@@ -784,15 +736,13 @@ install_files_from_directory() {
         # Always install/overwrite if cleanup was requested, otherwise respect existing file
         if [ "${CLEANUP_FIRST}" = "true" ] || [ ! -f "/usr/local/etc/ha-singleton.conf" ]; then
             local tmp_conf="/tmp/ha-singleton.conf.$$"
-            local escaped_wan_map="$(escape_sed_replacement "${GENERATED_WAN_INTERFACE_MAP}")"
 
             # Use universal configuration template with safe defaults.
             # Route management must stay disabled until ALT_DEFROUTE_* is explicitly set
             # to the peer firewall LAN addresses for this node.
             sed "s/vtnet1 vtnet2/${WAN_INTERFACES}/g" \
                 "${source_dir}/usr/local/etc/ha-singleton.conf.example" | \
-                sed 's/^ENABLE_ROUTE_MANAGEMENT="yes"/ENABLE_ROUTE_MANAGEMENT="no"/' | \
-                sed "s|^WAN_INTERFACE_MAP=.*|WAN_INTERFACE_MAP=\"${escaped_wan_map}\"|" > \
+                sed 's/^ENABLE_ROUTE_MANAGEMENT="yes"/ENABLE_ROUTE_MANAGEMENT="no"/' > \
                 "${tmp_conf}"
 
             local escaped_alt_gw_ipv4="$(escape_sed_replacement "${ALT_GW_IPV4}")"
@@ -951,25 +901,51 @@ validate_installation() {
         fi
     done
     
-    # Validate configuration file content
+    # Validate configuration file and WAN auto-discovery
     if [ -f "/usr/local/etc/ha-singleton.conf" ]; then
         log_info "Validating configuration file content..."
-        
-        # Check that WAN interfaces were properly substituted
-        local configured_interfaces
-        configured_interfaces=$(grep '^WAN_INTS=' /usr/local/etc/ha-singleton.conf 2>/dev/null | cut -d'"' -f2)
-        
-        if [ -n "${configured_interfaces}" ]; then
-            if [ "${configured_interfaces}" = "vtnet1 vtnet2" ]; then
-                log_warning "Configuration still has default interfaces (vtnet1 vtnet2)"
-                log_warning "Expected: ${WAN_INTERFACES}"
-            elif [ "${configured_interfaces}" = "${WAN_INTERFACES}" ]; then
-                log_success "WAN interfaces correctly configured: ${configured_interfaces}"
+
+        # Verify that config.xml exists and build_wan_map logic discovers at least one WAN
+        if [ -f /conf/config.xml ]; then
+            local discovered_map
+            discovered_map=$(awk '
+                /<interfaces>/ { in_if=1; next }
+                /<\/interfaces>/ { in_if=0 }
+                !in_if { next }
+                /^[[:space:]]*<[a-z][a-z0-9]*>[[:space:]]*$/ {
+                    tag=$0; sub(/^[[:space:]]*</,"",tag); sub(/>.*$/,"",tag)
+                    iface=tag; dev=""; descr=""
+                }
+                /<if>[^<]/ { line=$0; sub(/.*<if>/,"",line); sub(/<\/if>.*/,"",line); dev=line }
+                /<descr>[^<]/ { line=$0; sub(/.*<descr>/,"",line); sub(/<\/descr>.*/,"",line); descr=line }
+                /^[[:space:]]*<\/[a-z][a-z0-9]*>[[:space:]]*$/ {
+                    tag=$0; sub(/^[[:space:]]*<\//,"",tag); sub(/>.*$/,"",tag)
+                    if (tag==iface && dev!="") {
+                        is_wan=0; label=""
+                        if (iface=="wan") { is_wan=1; label="wan" }
+                        if (iface~/^opt[1-9]$/ && descr~/^[Ww][Aa][Nn][2-9]$/) { is_wan=1; label=tolower(descr) }
+                        if (is_wan) printf "%s:%s:%s ", iface, dev, label
+                    }
+                    iface=""; dev=""; descr=""
+                }
+            ' /conf/config.xml)
+            discovered_map="${discovered_map%% }"
+            if [ -z "${discovered_map}" ]; then
+                log_warning "WAN auto-discovery found no interfaces in /conf/config.xml"
+                log_warning "Ensure the primary WAN interface exists and secondary WANs have descr WAN2-WAN9"
             else
-                log_warning "WAN interfaces in config (${configured_interfaces}) differ from expected (${WAN_INTERFACES})"
+                log_success "WAN auto-discovery: ${discovered_map}"
+                # Verify each expected WAN device is present in the discovered map
+                for iface in ${WAN_INTERFACES}; do
+                    if echo "${discovered_map}" | grep -q ":${iface}:"; then
+                        log_success "  ${iface}: found in config.xml"
+                    else
+                        log_warning "  ${iface}: NOT found in config.xml WAN discovery"
+                    fi
+                done
             fi
         else
-            log_warning "Could not read WAN_INTS from configuration file"
+            log_warning "/conf/config.xml not found — WAN auto-discovery will fail at runtime"
         fi
         
         # Validate that PFSYNC demotion factor will be set correctly
@@ -979,21 +955,13 @@ validate_installation() {
             log_warning "System tunables initialization not found in script"
         fi
         
-        # Check if the configured interfaces actually have CARP configured
-        if [ -n "${configured_interfaces}" ] && command -v ifconfig >/dev/null 2>&1; then
-            log_info "Checking for CARP configuration on interfaces..."
+        # Check if the WAN interfaces have CARP configured
+        if command -v ifconfig >/dev/null 2>&1; then
+            log_info "Checking for CARP configuration on WAN interfaces..."
             local carp_found=false
-            for interface in ${configured_interfaces}; do
+            for interface in ${WAN_INTERFACES}; do
                 if ifconfig "${interface}" 2>/dev/null | grep -q "carp"; then
                     log_success "CARP configuration found on ${interface}"
-                    carp_found=true
-                elif ifconfig 2>/dev/null | grep -E "^${interface}_vlan[0-9]+" | head -1 | while read -r vlan_line; do
-                    local vlan_interface=$(echo "${vlan_line}" | cut -d: -f1)
-                    if ifconfig "${vlan_interface}" 2>/dev/null | grep -q "carp"; then
-                        log_success "CARP configuration found on VLAN interface: ${vlan_interface}"
-                        exit 0
-                    fi
-                done; then
                     carp_found=true
                 fi
             done
@@ -1193,8 +1161,6 @@ main() {
         error_exit "This script must be run as root"
     fi
 
-    GENERATED_WAN_INTERFACE_MAP="$(generate_wan_interface_map)"
-
     if [ -z "${ALT_GW_IPV4}" ]; then
         error_exit "--alt-gw-ipv4 is required for HA installation"
     fi
@@ -1215,7 +1181,6 @@ main() {
     validate_peer_ssh_carp
     
     log_info "WAN Interfaces: ${WAN_INTERFACES}"
-    log_info "WAN Interface Map: ${GENERATED_WAN_INTERFACE_MAP}"
     log_info "Git Branch: ${BRANCH_NAME}"
     log_info "Cleanup First: ${CLEANUP_FIRST}"
     log_info "ALT_DEFROUTE_IPV4 override: ${ALT_GW_IPV4}"
