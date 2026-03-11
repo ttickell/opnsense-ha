@@ -1303,8 +1303,7 @@ get_default_routes() {
             netstat -rn -f inet | awk '/^default/ {print $2}'
             ;;
         "ipv6")
-            # FreeBSD netstat -rn displays IPv6 default as '::/0', not 'default'
-            netstat -rn -f inet6 | awk 'NR>3 && ($1=="default" || $1=="::/0") {print $2}'
+            netstat -rn -f inet6 | awk '/^default/ {print $2}'
             ;;
         *)
             return 1
@@ -1321,8 +1320,7 @@ check_route_exists() {
             netstat -rn -f inet | grep -q "default.*${route_ip}"
             ;;
         "ipv6")
-            # FreeBSD netstat -rn displays IPv6 default as '::/0', not 'default'
-            netstat -rn -f inet6 | grep -qE "^(default|::/0)[[:space:]].*${route_ip}"
+            netstat -rn -f inet6 | grep -q "default.*${route_ip}"
             ;;
         *)
             return 1

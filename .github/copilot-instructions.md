@@ -8,13 +8,6 @@ This file describes the project layout, conventions, and key design decisions so
 
 - **Answer direct questions directly.** If the user asks a yes/no or factual question, answer it first. Do not take action in response to a question.
 - **Propose before acting.** If a question implies that action may be needed, state what action you think is appropriate and wait for explicit confirmation before doing anything.
-- **No implicit actions.** Do not run commands, install, edit, deploy, or validate unless the user explicitly asks for that exact action.
-- **Read-only checks also require consent.** Treat inspections, audits, and diagnostics as actions; only run them when explicitly requested.
-- **One-step execution only.** Do not chain multiple phases (e.g., install + preflight + debug) unless the user explicitly requests the full sequence.
-- **Intent gate before actions.** Before any action, state one-line intent and wait for explicit go-ahead.
-- **Facts vs next step.** Clearly separate observed facts from proposed next steps in responses.
-- **Label assumptions.** If any assumption is required, label it and obtain confirmation before acting on it.
-- **Scope discipline.** Keep responses tightly scoped to the user's request; avoid extra unsolicited steps.
 - **Path clarity in VS Code chat.** When answering path questions, state whether the path is absolute or workspace-relative, and provide the full absolute path in plain text (for example: `/usr/local/etc/checkset-nptv6.yml`) to avoid UI path-chip collapsing ambiguity.
 - **Debug command-first for system issues.** When debugging system-level commands, first isolate and validate the exact command behavior (with minimal repro steps) before editing project files. Do not iterate through edit/commit/push cycles until command-level root cause is confirmed.
 - **Always run the tool after fixing tool bugs.** When developing or modifying an operational tool/script, validate the fix by executing that same tool/script and confirming behavior. Never patch a tool bug "on the side" and assume the fix worked without running it.
