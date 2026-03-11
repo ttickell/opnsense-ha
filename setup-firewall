@@ -58,7 +58,7 @@ trap cleanup EXIT
 
 # Usage information
 usage() {
-    echo "Usage: $0 [OPTIONS] [WAN_INTERFACES] [BRANCH_NAME]"
+    echo "Usage: $0 [OPTIONS] [BRANCH_NAME]"
     echo
     echo "Options:"
     echo "  --cleanup, -c         Clean existing HA installation before installing"
@@ -69,21 +69,18 @@ usage() {
     echo "  --help, -h           Show this help message"
     echo
     echo "Parameters:"
-    echo "  WAN_INTERFACES    Space-delimited list of WAN interface names"
-    echo "                    (default: reads from existing config or vtnet1)"
     echo "  BRANCH_NAME       Git branch to use for installation (default: main)"
     echo
+    echo "WAN interfaces are discovered automatically from /conf/config.xml at runtime."
+    echo "No interface names need to be specified. Ensure WAN2-WAN9 have matching <descr>"
+    echo "entries in the OPNsense GUI (Interfaces -> [WAN2] -> Description)."
+    echo
     echo "Examples:"
-    echo "  $0                           # Smart defaults (existing config or vtnet1, main branch)"
-    echo "  $0 --test                    # Test using existing configuration"
-    echo "  $0 --cleanup vtnet1          # Clean first, then install single WAN"
+    echo "  $0 --alt-gw-ipv4 10.220.1.3 --alt-gw-ipv6 fd03:17ac:e938:4200::3"
+    echo "  $0 --alt-gw-ipv4 10.220.1.3 --alt-gw-ipv6 fd03:17ac:e938:4200::3 ghcwork"
+    echo "  $0 --cleanup --alt-gw-ipv4 10.220.1.3 --alt-gw-ipv6 fd03:17ac:e938:4200::3"
     echo "  $0 --fix-flapping            # Fix CARP flapping issues only (no install)"
     echo "  $0 --test                    # Test existing configuration"
-    echo "  $0 vtnet1                    # Single WAN interface, main branch"
-    echo "  $0 \"vtnet1 vtnet2\"           # Multiple WAN interfaces, main branch"
-    echo "  $0 --alt-gw-ipv4 10.220.1.3 --alt-gw-ipv6 fd03:17ac:e938:4200::3 \"vtnet0 vtnet1\""
-    echo "  $0 vtnet1 ghcwork            # Single WAN interface, ghcwork branch"
-    echo "  $0 --cleanup \"vtnet1 vtnet2\" develop  # Clean first, multi-WAN, develop branch"
     echo
     echo "This script installs OPNsense HA singleton customizations."
     exit 1
@@ -138,7 +135,6 @@ fix_carp_flapping() {
 CLEANUP_FIRST=false
 FIX_FLAPPING_ONLY=false
 TEST_CONFIG_ONLY=false
-WAN_INTERFACES=""
 BRANCH_NAME=""
 ALT_GW_IPV4=""
 ALT_GW_IPV6=""
@@ -190,11 +186,8 @@ while [ $# -gt 0 ]; do
             usage
             ;;
         *)
-            # First non-option argument is WAN_INTERFACES
-            if [ -z "${WAN_INTERFACES}" ]; then
-                WAN_INTERFACES="$1"
-            # Second non-option argument is BRANCH_NAME
-            elif [ -z "${BRANCH_NAME}" ]; then
+            # First non-option argument is BRANCH_NAME
+            if [ -z "${BRANCH_NAME}" ]; then
                 BRANCH_NAME="$1"
             else
                 log_error "Too many arguments: $1"
@@ -215,9 +208,7 @@ fi
 
 # Handle remaining positional arguments after --
 while [ $# -gt 0 ]; do
-    if [ -z "${WAN_INTERFACES}" ]; then
-        WAN_INTERFACES="$1"
-    elif [ -z "${BRANCH_NAME}" ]; then
+    if [ -z "${BRANCH_NAME}" ]; then
         BRANCH_NAME="$1"
     else
         log_error "Too many arguments: $1"
@@ -226,11 +217,6 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# Set defaults if not provided
-if [ -z "${WAN_INTERFACES}" ]; then
-    WAN_INTERFACES="vtnet1"
-    log_info "No WAN interfaces specified, using default: ${WAN_INTERFACES}"
-fi
 BRANCH_NAME="${BRANCH_NAME:-main}"
 
 # Function to check if running on OPNsense
@@ -613,43 +599,6 @@ escape_sed_replacement() {
     printf '%s' "$1" | sed 's/[\\/&]/\\\\&/g'
 }
 
-# Function to validate WAN interfaces exist on the system
-validate_wan_interfaces() {
-    local interfaces="$1"
-    local valid=true
-    local available_interfaces
-    
-    log_info "Validating WAN interfaces: ${interfaces}"
-    
-    # Get list of available network interfaces
-    available_interfaces=$(ifconfig -l 2>/dev/null || echo "")
-    
-    if [ -z "${available_interfaces}" ]; then
-        log_warning "Could not retrieve network interface list, skipping validation"
-        return 0
-    fi
-    
-    # Check each specified interface
-    for interface in ${interfaces}; do
-        if echo "${available_interfaces}" | grep -q "\b${interface}\b"; then
-            log_success "Interface ${interface}: Found"
-        else
-            log_error "Interface ${interface}: NOT FOUND"
-            log_error "Available interfaces: ${available_interfaces}"
-            valid=false
-        fi
-    done
-    
-    if [ "${valid}" = "false" ]; then
-        log_error "One or more WAN interfaces do not exist on this system"
-        log_info "Use 'ifconfig -l' to see available interfaces"
-        return 1
-    fi
-    
-    log_success "All WAN interfaces validated successfully"
-    return 0
-}
-
 # Function to validate CARP preempt behavior for deterministic failback
 validate_carp_preempt() {
     log_info "Validating CARP preempt setting..."
@@ -722,8 +671,7 @@ install_files_from_directory() {
     
     # Install main CARP script
     if [ -f "${source_dir}/usr/local/etc/rc.syshook.d/carp/00-ha-singleton" ]; then
-        sed "s/__INT_LIST__/${WAN_INTERFACES}/g" \
-            "${source_dir}/usr/local/etc/rc.syshook.d/carp/00-ha-singleton" > \
+        cp "${source_dir}/usr/local/etc/rc.syshook.d/carp/00-ha-singleton" \
             /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
         chmod 755 /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
         log_success "Installed CARP hook script"
@@ -955,19 +903,20 @@ validate_installation() {
             log_warning "System tunables initialization not found in script"
         fi
         
-        # Check if the WAN interfaces have CARP configured
-        if command -v ifconfig >/dev/null 2>&1; then
-            log_info "Checking for CARP configuration on WAN interfaces..."
+        # Check if any discovered WAN interfaces have CARP configured
+        if command -v ifconfig >/dev/null 2>&1 && [ -n "${discovered_map}" ]; then
+            log_info "Checking for CARP configuration on discovered WAN interfaces..."
             local carp_found=false
-            for interface in ${WAN_INTERFACES}; do
-                if ifconfig "${interface}" 2>/dev/null | grep -q "carp"; then
-                    log_success "CARP configuration found on ${interface}"
+            for entry in ${discovered_map}; do
+                local dev
+                dev=$(echo "${entry}" | cut -d: -f2)
+                if ifconfig "${dev}" 2>/dev/null | grep -q "carp"; then
+                    log_success "CARP configuration found on ${dev}"
                     carp_found=true
                 fi
             done
-            
             if [ "${carp_found}" = "false" ]; then
-                log_warning "No CARP configuration found on specified WAN interfaces"
+                log_warning "No CARP configuration found on discovered WAN interfaces"
                 log_info "Make sure to configure CARP VIPs in the OPNsense GUI"
             fi
         fi
@@ -1045,21 +994,6 @@ run_test_mode() {
     check_opnsense
     echo
     
-    # Validate WAN interfaces
-    log_info "Validating WAN interfaces: ${WAN_INTERFACES}"
-    if validate_wan_interfaces "${WAN_INTERFACES}"; then
-        log_success "WAN interfaces validation passed"
-    else
-        log_error "WAN interfaces validation failed"
-        
-        # Suggest alternative interfaces if available
-        log_info "Available network interfaces on this system:"
-        if command -v ifconfig >/dev/null 2>&1; then
-            ifconfig -l | tr ' ' '\n' | grep -E "^(vtnet|em|igb|ix)" | head -10 | while read -r iface; do
-                echo "  ${iface}"
-            done
-        fi
-    fi
     echo
     
     # Check if installation exists and validate it
@@ -1147,11 +1081,6 @@ main() {
         error_exit "Invalid branch name provided: ${BRANCH_NAME}"
     fi
     
-    # Validate WAN interfaces exist on the system
-    if ! validate_wan_interfaces "${WAN_INTERFACES}"; then
-        error_exit "Invalid WAN interfaces provided: ${WAN_INTERFACES}"
-    fi
-
     if ! validate_carp_preempt; then
         error_exit "CARP preempt validation failed"
     fi
