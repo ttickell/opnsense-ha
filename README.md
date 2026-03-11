@@ -97,22 +97,22 @@ Do **not** place CARP Virtual IPs on WAN interfaces. WAN failover is managed ent
 
 **CARP VIPs belong only on LAN/internal interfaces** where clients need a stable shared IP.
 
-### 5. Dual Registration in Configuration File
+### 5. WAN Interface Naming Convention
 
-Each WAN interface must appear in **two separate configuration variables** in `/usr/local/etc/ha-singleton.conf`:
+The script auto-discovers WAN interfaces at startup by parsing `/conf/config.xml`. No manual configuration is required. Detection rules:
 
-| Variable | Value format | Used for |
+- The `<wan>` interface element is always treated as a WAN.
+- Any `<optN>` element whose `<descr>` is `WAN2`–`WAN9` (case-insensitive) is treated as an additional WAN.
+
+For each discovered WAN the script derives three values:
+
+| Field | Source | Used for |
 |---|---|---|
-| `WAN_INTS` | kernel device name | `ifconfig <dev> up/down` |
-| `WAN_INTERFACE_MAP` | `opnsense_name:device_name` | `configctl interface reconfigure/newip` |
+| OPNsense name (`wan`, `opt1`) | XML element name | `configctl`, `rc.configure_interface` |
+| Device name (`vtnet0`, `vtnet1`) | `<if>` child | `ifconfig up/down` |
+| Human label (`wan`, `wan2`) | `<descr>` or element name | config file paths, log messages |
 
-Example for a dual-WAN setup:
-```bash
-WAN_INTS="vtnet1 vtnet2"
-WAN_INTERFACE_MAP="wan:vtnet1 wan2:vtnet2"
-```
-
-If a WAN device is in `WAN_INTS` but missing from `WAN_INTERFACE_MAP`, the interface will be brought up/down correctly but DHCP lease renewal will silently skip it, leaving IPv4 routes stale after failover.
+To use a second WAN, give its OPNsense interface the description `WAN2` in **Interfaces → [optN] → Description**. The script will pick it up automatically on the next CARP event.
 
 ### WAN Prerequisites Checklist
 
@@ -122,7 +122,7 @@ Before running `setup-firewall`, confirm all of the following:
 - [ ] Both nodes: DHCPv6 DUID matches (if using IPv6 prefix delegation)
 - [ ] Both nodes: WAN interface(s) set to DHCP for IPv4
 - [ ] Both nodes: No CARP VIPs assigned to WAN interfaces
-- [ ] Config file: Every WAN device listed in both `WAN_INTS` and `WAN_INTERFACE_MAP`
+- [ ] Second WAN interface (if present): `<descr>WAN2</descr>` set in OPNsense GUI
 
 ## Physical Deployment Topology
 
@@ -320,8 +320,8 @@ After running the setup script, verify the installation:
 ls -la /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
 ls -la /usr/local/etc/ha-singleton.conf
 
-# Verify WAN interfaces were configured
-grep "WAN_INTS" /usr/local/etc/ha-singleton.conf
+# Verify WAN auto-discovery works (run directly on the firewall)
+sh /tmp/test-wan-discovery.sh
 
 # Test script syntax
 sh -n /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
@@ -392,12 +392,9 @@ Enable DHCP lease renewal in your configuration:
 ```bash
 # Enable interface reconfiguration for DHCP renewal
 ENABLE_INTERFACE_RECONFIGURE="yes"
-
-# Map OPNsense interface names to device names
-WAN_INTERFACE_MAP="wan:vtnet0_vlan110"
-# For multiple WANs:
-# WAN_INTERFACE_MAP="wan:vtnet1 wan2:vtnet2"
 ```
+
+WAN interface discovery is automatic — no `WAN_INTERFACE_MAP` or `WAN_INTS` needed.
 
 #### Benefits
 
@@ -411,12 +408,6 @@ WAN_INTERFACE_MAP="wan:vtnet0_vlan110"
 ### Main Configuration File: `/usr/local/etc/ha-singleton.conf`
 
 ```bash
-# WAN Interfaces to manage
-WAN_INTS="vtnet1 vtnet2"
-
-# WAN Interface Mapping for OPNsense integration
-WAN_INTERFACE_MAP="wan:vtnet1 wan2:vtnet2"
-
 # Services to manage
 SERVICES="rtsold dhcp6c radvd"
 
@@ -539,9 +530,6 @@ This HA solution is designed to work with the [opnsense-ipv6](https://github.com
 
 4. **Configuration not applied**:
    ```bash
-   # Check if interfaces were substituted correctly
-   grep "WAN_INTS" /usr/local/etc/ha-singleton.conf
-   
    # Manually edit if needed
    vi /usr/local/etc/ha-singleton.conf
    ```
@@ -605,15 +593,12 @@ This HA solution is designed to work with the [opnsense-ipv6](https://github.com
    # Check if interface reconfiguration is enabled
    grep ENABLE_INTERFACE_RECONFIGURE /usr/local/etc/ha-singleton.conf
    
-   # Verify interface mapping configuration
-   grep WAN_INTERFACE_MAP /usr/local/etc/ha-singleton.conf
+   # Verify WAN auto-discovery resolves interfaces correctly
+   sh /tmp/test-wan-discovery.sh
    
-   # Test configctl commands manually
+   # Test configctl commands manually (use OPNsense interface name from discovery)
    configctl interface reconfigure wan
    configctl interface newip wan
-   
-   # Check DHCP lease status
-   dhclient -T vtnet0_vlan110  # Replace with your interface
    ```
 
 ### Log Locations
@@ -643,7 +628,7 @@ The solution follows OPNsense development best practices:
 ### v2.6 (Current)
 - **DHCP Lease Renewal**: Complete failover solution with automatic DHCP state restoration
   - Implements `configctl interface reconfigure/newip` for DHCP lease renewal
-  - Adds `WAN_INTERFACE_MAP` configuration for OPNsense interface mapping
+  - Adds WAN interface auto-discovery from `/conf/config.xml` (eliminates `WAN_INTS`/`WAN_INTERFACE_MAP` manual config)
   - Ensures both IPv4 and IPv6 connectivity restored during failover
   - Resolves "route already in table" errors with enhanced route management
 - **Enhanced Interface Management**: Robust interface UP/DOWN logic with configctl integration

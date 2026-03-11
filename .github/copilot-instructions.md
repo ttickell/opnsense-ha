@@ -141,16 +141,17 @@ This is the only file that runs on every CARP state change. OPNsense calls it wi
 Execution flow on MASTER transition:
 1. Acquire lock (prevents concurrent runs)
 2. Set `net.pfsync.carp_demotion_factor=0` (CARP stability)
-3. Bring all `WAN_INTS` interfaces **up** via `configctl interface linkup start`
-4. Wait `INTERFACE_SETTLE_TIME` seconds
-5. Clear stale default routes
-6. Trigger DHCP renewal: `configctl interface reconfigure <wan>` + `configctl interface newip <wan>` for every entry in `WAN_INTERFACE_MAP`
-7. Start IPv6 services (`rtsold`, `dhcp6c`, `radvd`)
+3. Discover WAN interfaces via `build_wan_map()` (parses `/conf/config.xml`)
+4. Bring all discovered WAN device names **up** via `configctl interface linkup start`
+5. Wait `INTERFACE_SETTLE_TIME` seconds
+6. Clear stale default routes
+7. Trigger DHCP renewal: `configctl interface newip <opnsense_name>` + `rc.configure_interface <opnsense_name>` for each WAN
+8. Start IPv6 services (`rtsold`, `dhcp6c`, `radvd`)
 
 BACKUP transition:
 1. Acquire lock
 2. Set PFSYNC demotion factor
-3. Bring all `WAN_INTS` interfaces **down**
+3. Bring all discovered WAN device names **down**
 4. Stop IPv6 services
 5. Inject backup default routes (`ALT_DEFROUTE_IPV4`, `ALT_DEFROUTE_IPV6`)
 
@@ -164,8 +165,7 @@ Sourced by `00-ha-singleton` at runtime. Every variable has a default inside the
 
 | Variable | Purpose |
 |---|---|
-| `WAN_INTS` | Space-delimited list of kernel WAN device names (used with `ifconfig`) |
-| `WAN_INTERFACE_MAP` | `opnsense_name:device_name` pairs (used with `configctl`) |
+| `WAN_MAP` | Auto-discovered at startup by `build_wan_map()` from `/conf/config.xml`. Each entry is `opnsense_name:device:label` (e.g. `wan:vtnet0:wan opt1:vtnet1:wan2`). Can be set manually in `ha-singleton.conf` to override discovery. |
 | `ALT_DEFROUTE_IPV4` | Peer firewall's LAN IPv4 — injected as default route when BACKUP |
 | `ALT_DEFROUTE_IPV6` | Peer firewall's LAN IPv6 — injected as default route when BACKUP |
 | `SERVICES` | Services to start (MASTER) / stop (BACKUP) |
@@ -173,7 +173,7 @@ Sourced by `00-ha-singleton` at runtime. Every variable has a default inside the
 | `ENABLE_INTERFACE_RECONFIGURE` | Toggle DHCP lease renewal on MASTER |
 | `DEBUG` | Set to `yes` for verbose syslog output |
 
-**Every WAN device must appear in both `WAN_INTS` and `WAN_INTERFACE_MAP`.** Missing one causes silent partial failover.
+WAN interfaces are discovered automatically. `WAN_INTS` and `WAN_INTERFACE_MAP` are no longer config file variables. To add a second WAN, set its OPNsense interface `<descr>` to `WAN2`–`WAN9` in the GUI.
 
 ---
 

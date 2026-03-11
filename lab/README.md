@@ -348,8 +348,8 @@ The `ha-singleton.conf` for each lab firewall is in [firewall-configs/](firewall
 
 ### Primary (`lab-fw-primary`)
 ```bash
-WAN_INTS="vtnet0 vtnet1"
-WAN_INTERFACE_MAP="wan:vtnet0 wan2:vtnet1"
+# WAN interfaces are auto-discovered from /conf/config.xml.
+# vtnet0 (<wan>) and vtnet1 (<opt1> with <descr>WAN2</descr>) are found automatically.
 ALT_DEFROUTE_IPV4="10.220.1.3"       # Secondary FW LAN IP
 ALT_DEFROUTE_IPV6="fd03:17ac:e938:4200::3"
 ENABLE_IPV6="yes"
@@ -359,8 +359,7 @@ DEBUG="yes"   # Recommended during lab testing
 
 ### Secondary (`lab-fw-secondary`)
 ```bash
-WAN_INTS="vtnet0 vtnet1"
-WAN_INTERFACE_MAP="wan:vtnet0 wan2:vtnet1"
+# WAN interfaces are auto-discovered from /conf/config.xml.
 ALT_DEFROUTE_IPV4="10.220.1.2"       # Primary FW LAN IP
 ALT_DEFROUTE_IPV6="fd03:17ac:e938:4200::2"
 ENABLE_IPV6="yes"
@@ -410,7 +409,7 @@ Adds a VLAN 214 `lab-uplink` segment connecting the lab firewall pair to the pro
 
 - VLAN 214: `10.220.0.0/30` — production FW: `.1`; lab FW CARP VIP: `.2`
 - Changes on production FW: static route for `10.220.1.0/24` (lab LAN) via `10.220.0.2`; firewall rule permitting lab LAN → internet (block lab LAN → production LAN)
-- Changes on lab FW VMs: add a 5th NIC on `vmbr-lab`, VLAN 214 — this interface must **not** appear in `WAN_INTS`; add default route to `10.220.0.1`
+- Changes on lab FW VMs: add a 5th NIC on `vmbr-lab`, VLAN 214 — this interface must have a description that does **not** match `WAN2`–`WAN9`; add default route to `10.220.0.1`
 - IPv6: static route on production FW for `fd03:17ac:e938:4200::/56` via lab FW VIP
 - Enables: real DHCP lease renewal testing, NPTv6 end-to-end, `ping 8.8.8.8` from `lab-client`
 
