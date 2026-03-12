@@ -958,16 +958,6 @@ manage_wan_interfaces() {
             "MASTER")
                 clear_ipv6_ifdisabled "${WAN_INT}"
 
-                # Ensure ACCEPT_RTADV is set so rtsold will process Router
-                # Advertisements and install the IPv6 default route.  OPNsense
-                # sets this flag via interface_configure() on a normal boot, but
-                # when we bring an interface back up via configctl linkup it does
-                # not go through that PHP path, so the flag may be absent.
-                if [ "${ENABLE_IPV6_HA_MANAGEMENT}" = "yes" ]; then
-                    ifconfig "${WAN_INT}" inet6 accept_rtadv 2>/dev/null || \
-                        logger -p warning -t ${TAG} "Failed to set accept_rtadv on ${WAN_INT}"
-                fi
-
                 if [ "${cur_status}" = "DOWN" ]; then
                     logger -p info -t ${TAG} "Bringing up ${WAN_INT} (CARP MASTER)"
                     # Use configctl with correct syntax (spaces not dots)
