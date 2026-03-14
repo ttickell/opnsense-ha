@@ -81,6 +81,9 @@ IPV6_RECOVERY_RETRY_DELAY="4"           # Seconds to wait after each recovery at
 ENABLE_RADVD_BACKUP_WATCHDOG="yes"      # Keep radvd stopped while BACKUP/INIT
 RADVD_BACKUP_WATCHDOG_INTERVAL="2"      # Seconds between radvd kill checks
 RADVD_BACKUP_WATCHDOG_PIDFILE="/var/run/ha-radvd-backup-watchdog.pid"
+ENABLE_DHCP6C_BACKUP_WATCHDOG="yes"     # Keep dhcp6c stopped while BACKUP/INIT
+DHCP6C_BACKUP_WATCHDOG_INTERVAL="5"     # Seconds between dhcp6c kill checks
+DHCP6C_BACKUP_WATCHDOG_PIDFILE="/var/run/ha-dhcp6c-backup-watchdog.pid"
 ENABLE_WAN_BACKUP_WATCHDOG="yes"        # Keep WAN interfaces down while BACKUP/INIT
 WAN_BACKUP_WATCHDOG_INTERVAL="3"        # Seconds between WAN down checks
 WAN_BACKUP_WATCHDOG_PIDFILE="/var/run/ha-wan-backup-watchdog.pid"
@@ -489,15 +492,53 @@ stop_wan_backup_watchdog() {
     fi
 }
 
+start_dhcp6c_backup_watchdog() {
+    if [ "${ENABLE_IPV6}" != "yes" ] || [ "${ENABLE_DHCP6C_BACKUP_WATCHDOG}" != "yes" ]; then
+        return 0
+    fi
+
+    if [ -f "${DHCP6C_BACKUP_WATCHDOG_PIDFILE}" ]; then
+        local existing_pid=$(cat "${DHCP6C_BACKUP_WATCHDOG_PIDFILE}" 2>/dev/null || true)
+        if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    logger -p warning -t ${TAG} "Starting BACKUP dhcp6c watchdog"
+    (
+        while :; do
+            if [ -f "/var/run/dhcp6c.pid" ]; then
+                kill -TERM "$(cat /var/run/dhcp6c.pid)" 2>/dev/null || true
+            fi
+            pkill -x dhcp6c >/dev/null 2>&1 || true
+            sleep "${DHCP6C_BACKUP_WATCHDOG_INTERVAL:-5}"
+        done
+    ) >/dev/null 2>&1 &
+    echo $! > "${DHCP6C_BACKUP_WATCHDOG_PIDFILE}"
+}
+
+stop_dhcp6c_backup_watchdog() {
+    if [ -f "${DHCP6C_BACKUP_WATCHDOG_PIDFILE}" ]; then
+        local watchdog_pid=$(cat "${DHCP6C_BACKUP_WATCHDOG_PIDFILE}" 2>/dev/null || true)
+        if [ -n "${watchdog_pid}" ] && kill -0 "${watchdog_pid}" 2>/dev/null; then
+            logger -p info -t ${TAG} "Stopping BACKUP dhcp6c watchdog"
+            kill "${watchdog_pid}" >/dev/null 2>&1 || true
+        fi
+        rm -f "${DHCP6C_BACKUP_WATCHDOG_PIDFILE}" >/dev/null 2>&1 || true
+    fi
+}
+
 manage_backup_watchdogs() {
     case "${CARP_STATUS}" in
         "MASTER")
             stop_wan_backup_watchdog
             stop_radvd_backup_watchdog
+            stop_dhcp6c_backup_watchdog
             ;;
         "BACKUP")
             start_wan_backup_watchdog
             start_radvd_backup_watchdog
+            start_dhcp6c_backup_watchdog
             ;;
     esac
 }

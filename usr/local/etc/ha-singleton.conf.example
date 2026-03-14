@@ -45,8 +45,10 @@ SYNC_IPV6_STATE="yes"               # Sync IPv6 state between nodes
 INTERFACE_SETTLE_TIME="2"           # Seconds to wait after interface changes
 SERVICE_STARTUP_DELAY="1"           # Seconds between service starts
 HEALTH_CHECK_ENABLED="yes"          # Enable health checking
-ENABLE_RADVD_BACKUP_WATCHDOG="yes"  # Continuously stop radvd on BACKUP/INIT
+ENABLE_RADVD_BACKUP_WATCHDOG="yes"   # Continuously stop radvd on BACKUP/INIT
 RADVD_BACKUP_WATCHDOG_INTERVAL="2"  # Seconds between radvd kill checks
+ENABLE_DHCP6C_BACKUP_WATCHDOG="yes"  # Continuously stop dhcp6c on BACKUP/INIT
+DHCP6C_BACKUP_WATCHDOG_INTERVAL="5"  # Seconds between dhcp6c kill checks
 ENABLE_WAN_BACKUP_WATCHDOG="yes"    # Continuously keep WAN interfaces down on BACKUP/INIT
 WAN_BACKUP_WATCHDOG_INTERVAL="3"    # Seconds between WAN down checks
 CARP_PREEMPT_VALUE="1"              # Enable preemptive CARP failback (1=yes, 0=no)
