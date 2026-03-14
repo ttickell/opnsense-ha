@@ -253,6 +253,11 @@ A sequenced checklist for building the isolated lab. Tasks are grouped by depend
 
 - [ ] **5.1** From `lab-client` console: `ping -c 3 10.220.1.1` — should reach CARP VIP
 - [ ] **5.2** From `lab-client` console: `ip -6 addr` — should show a GUA from the delegated prefix
+- [ ] **5.2a** Confirm the DHCP server is advertising the CARP VIP (`10.220.1.1`) as the default gateway, **not** the node's real LAN IP. From `lab-client` console:
+  ```bash
+  ip route show default   # must show via 10.220.1.1, not 10.220.1.2 or 10.220.1.3
+  ```
+  If it shows a node's real IP, check the dnsmasq `dhcp-option=3,10.220.1.1` setting in the OPNsense DHCP server config and renew the lease (`dhclient -r && dhclient eth0`). Failover will not be seamless until this is correct — after failover the old gateway IP becomes BACKUP with WANs down and the client loses transit even though the CARP VIP is live.
 - [ ] **5.3** Trigger primary→secondary failover:
   ```bash
   # On lab-fw-primary console

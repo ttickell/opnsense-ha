@@ -315,6 +315,18 @@ Examples:
 
 After running the setup script, verify the installation:
 
+**Manual confirmation — LAN DHCP gateway option must be the CARP VIP:**
+
+The LAN DHCP server must advertise the CARP VIP as the default gateway, not the node's own LAN IP. If it advertises the node's real IP (e.g. `10.x.x.2`), LAN clients will not recover after failover until their lease expires — because the old gateway IP ends up on the BACKUP node with WANs down.
+
+Verify from a LAN client after obtaining a DHCP lease:
+```bash
+ip route show default   # Linux
+route print             # Windows
+netstat -rn | grep default  # macOS / FreeBSD
+```
+The default gateway must be the CARP VIP. If it is not, correct the `router` option in the DHCP server (Services → DHCPv4 → [LAN] → Gateway) and renew client leases.
+
 ```bash
 # Check installed files
 ls -la /usr/local/etc/rc.syshook.d/carp/00-ha-singleton
