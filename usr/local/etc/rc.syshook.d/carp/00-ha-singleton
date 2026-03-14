@@ -1264,7 +1264,7 @@ verify_default_route() {
             logger -p info -t ${TAG} "Attempting to add ${family} default route via ${expected_gateway}"
             case "${family}" in
                 "ipv4")
-                    route add default "${expected_gateway}" 2>/dev/null || \
+                    route add -inet default "${expected_gateway}" -netmask 0.0.0.0 2>/dev/null || \
                         logger -p warning -t ${TAG} "Failed to manually add IPv4 route"
                     ;;
                 "ipv6")
@@ -1391,25 +1391,6 @@ verify_and_fix_master_routes() {
     done
 }
 
-check_route_exists() {
-    local gateway=$1
-    local family=$2
-    
-    case "${family}" in
-        "ipv4")
-            # Check if default route exists via this gateway
-            netstat -rn -f inet | grep "^default" | grep -q "${gateway}"
-            return $?
-            ;;
-        "ipv6")
-            # Check if default IPv6 route exists via this gateway
-            netstat -rn -f inet6 | grep "^default" | grep -q "${gateway}"
-            return $?
-            ;;
-    esac
-    return 1
-}
-
 get_default_routes() {
     local family=$1
     case "${family}" in
@@ -1452,7 +1433,7 @@ remove_default_routes() {
             get_default_routes "ipv4" | while read route_gw; do
                 if [ -n "${route_gw}" ]; then
                     logger -p info -t ${TAG} "Removing IPv4 default route via ${route_gw}"
-                    route delete default "${route_gw}" 2>/dev/null || true
+                    route delete -inet default "${route_gw}" 2>/dev/null || true
                 fi
             done
             ;;
@@ -1497,7 +1478,7 @@ manage_routes() {
             
             if check_route_exists "${ALT_DEFROUTE_IPV4}" "ipv4"; then
                 logger -p info -t ${TAG} "Removing IPv4 backup route via ${ALT_DEFROUTE_IPV4}"
-                route delete default "${ALT_DEFROUTE_IPV4}" 2>/dev/null || true
+                route delete -inet default "${ALT_DEFROUTE_IPV4}" 2>/dev/null || true
             fi
             
             if [ "${ENABLE_IPV6}" = "yes" ] && [ -n "${ALT_DEFROUTE_IPV6}" ] && check_route_exists "${ALT_DEFROUTE_IPV6}" "ipv6"; then
@@ -1523,7 +1504,7 @@ manage_routes() {
             
             # Add backup routes
             logger -p info -t ${TAG} "Adding IPv4 backup default route via ${ALT_DEFROUTE_IPV4}"
-            route add default "${ALT_DEFROUTE_IPV4}" 2>/dev/null || \
+            route add -inet default "${ALT_DEFROUTE_IPV4}" -netmask 0.0.0.0 2>/dev/null || \
                 logger -p warning -t ${TAG} "Failed to add IPv4 backup route"
             
             if [ "${ENABLE_IPV6}" = "yes" ] && [ -n "${ALT_DEFROUTE_IPV6}" ]; then
